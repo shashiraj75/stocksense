@@ -316,30 +316,50 @@ class TestCatchupSlotIdentity:
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestShortRemainsInactive:
-    def test_no_short_schedule_call_outside_the_gated_short_functions(self):
-        """V-SCHED1C2B — short scheduling code now exists (gated by
-        VALIDATION_AUTO_SHORT_UNIVERSES, default inactive — see
-        TestAutoShortConfigParser/TestAutoShortSchedulerStructure), so
-        the old "horizon=\"short\" appears nowhere in main.py at all"
-        invariant is no longer the correct one. The invariant that
-        actually matters — short is unreachable outside its own gated
-        functions, and the gate defaults to inactive — is proven
-        directly by test_no_horizon_short_execution_reachable_outside_gated_functions
-        and test_flag_absent_means_no_calendar_resolution_or_execution
-        above. This test now only reconfirms the existing medium/long
-        loop itself never references horizon="short" (already covered
-        by test_cadence_and_short_and_manual_behavior_unaffected_by_rollout1
-        too — kept here as a stable, differently-named regression anchor)."""
+    """2026-09 WEEKLY-ONLY POLICY: renamed in spirit but kept as the
+    class name for git-blame continuity — short is no longer
+    unconditionally inactive; it is now included in the single weekly
+    Saturday batch WHEN AND ONLY WHEN VALIDATION_AUTO_SHORT_UNIVERSES
+    enables it, via the shared enabled_validation_combinations() gate —
+    same allowlist semantics as before, just reached from the one
+    consolidated scheduler instead of a separate daily one."""
+
+    def test_short_reachable_only_through_the_shared_enabled_combinations_gate(self):
+        """The weekly scheduler must derive its combination list EXCLUSIVELY
+        from enabled_validation_combinations() — never from a second,
+        independently-maintained short-specific code path inside the loop
+        itself (which would risk drifting from the allowlist semantics)."""
         import inspect
         import api.main as main_module
-        assert "horizon=\"short\"" not in inspect.getsource(main_module._validation_schedule_loop)
-        assert "horizon='short'" not in inspect.getsource(main_module._validation_schedule_loop)
+        src = inspect.getsource(main_module._validation_schedule_loop)
+        assert "enabled_validation_combinations()" in src
+        # No separate short-specific admission call remains inside the loop —
+        # short is admitted through the exact same execute_admitted_validation
+        # call site as medium/long, differing only by which `horizon` the
+        # shared combinations list yields for this iteration.
+        assert src.count("execute_admitted_validation(\n") == 1
 
-    def test_short_slots_remain_structurally_creatable_but_never_scheduled(self, isolated_db):
+    def test_disabled_allowlist_yields_zero_short_combinations(self, monkeypatch):
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        combos = main_module.enabled_validation_combinations()
+        assert all(h != "short" for h, _u in combos)
+        # medium/long for all 3 universes must still be present regardless.
+        assert len(combos) == 6
+
+    def test_enabled_allowlist_adds_exactly_those_short_universes(self, monkeypatch):
+        import api.main as main_module
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,us")
+        combos = main_module.enabled_validation_combinations()
+        short_combos = [u for h, u in combos if h == "short"]
+        assert short_combos == ["nifty100", "us"]  # canonical order preserved
+        assert len(combos) == 8  # 2 short + 6 medium/long
+
+    def test_short_slots_are_admitted_like_any_other_combination_when_enabled(self, isolated_db):
         slot = get_or_create_schedule_slot(horizon="short", universe="us",
                                             scheduled_slot=T0, schedule_version="v1", now=T0)
         assert slot["horizon"] == "short"
-        assert slot["status"] == "due"  # nothing ever admits it automatically
+        assert slot["status"] == "due"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -348,29 +368,35 @@ class TestShortRemainsInactive:
 # ─────────────────────────────────────────────────────────────────────────
 
 class TestCadenceUnchanged:
-    def test_medium_and_long_now_share_the_weekly_saturday_cadence(self):
-        """2026-09: supersedes the prior 'medium daily / long weekly-Sunday'
-        assertion — that cadence was intentionally replaced with a single
-        consolidated weekly window (every Saturday 12:00 UTC) for both
-        horizons. This guard now protects the NEW cadence against
-        accidental drift, and explicitly proves the OLD IST-anchored daily
-        constants are gone (not just that new ones were added alongside
-        them)."""
+    def test_short_medium_and_long_now_share_the_single_weekly_saturday_cadence(self):
+        """2026-09 WEEKLY-ONLY POLICY: supersedes the prior 'medium+long
+        weekly, short independently daily at 03:30 IST' split — short was
+        moved into this exact same weekly window, not merely made to
+        LOOK similar via a second copy of the same constants. This guard
+        protects the unified cadence against accidental drift, and
+        explicitly proves the old IST-anchored daily short constants are
+        gone from the codebase entirely, not just unused."""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
-        # New cadence: UTC-anchored weekly slot, shared helper, both horizons.
+        # New cadence: UTC-anchored weekly slot, shared helper, ALL horizons
+        # via the single shared combinations list.
         assert "next_saturday_1200_utc" in src
-        assert 'for horizon in ("medium", "long")' in src
-        assert "5 * 60" in src  # 5-minute inter-universe/horizon gap preserved
-        # Old cadence must be fully gone, not merely superseded in effect.
-        assert "TARGET_HOUR = 6" not in src
-        assert "weekday() == 6" not in src
+        assert "enabled_validation_combinations()" in src
+        assert "5 * 60" in src  # 5-minute inter-combination gap preserved
+        # Old short-specific daily cadence must be fully gone from the module,
+        # not merely superseded in effect by leaving dead code behind.
+        full_src = inspect.getsource(main_module)
+        assert "TARGET_HOUR = 3" not in full_src
+        assert "TARGET_MINUTE = 30" not in full_src
+        assert not hasattr(main_module, "_short_validation_schedule_loop")
+        assert not hasattr(main_module, "_short_catchup_validation")
+        assert not hasattr(main_module, "_catchup_validation")
 
     def test_universe_ordering_unchanged(self):
         import inspect
         import api.main as main_module
-        src = inspect.getsource(main_module._validation_schedule_loop)
+        src = inspect.getsource(main_module.enabled_validation_combinations)
         assert '("nifty100", "midcap", "us")' in src
 
 
@@ -870,43 +896,138 @@ class TestCatchupBootstrapSafety:
                                             scheduled_slot=T0, schedule_version="v1", now=T0)
         assert slot["status"] == "due"
 
-    def test_catchup_source_checks_baseline_before_creating_todays_slot(self):
-        """Structural proof (matches this file's existing source-inspection
-        convention for main.py's nested async functions): the bootstrap
-        guard must be checked BEFORE get_or_create_schedule_slot is ever
-        called in _catchup_validation — the check must gate slot creation,
-        not merely exist somewhere in the function."""
-        import inspect
+    def test_missed_slot_check_source_checks_baseline_before_reading_slot_status(self):
+        """2026-09 WEEKLY-ONLY POLICY: _catchup_validation (which USED to
+        call get_or_create_schedule_slot — i.e. execute a catch-up run) is
+        REMOVED. Its replacement, compute_missed_validation_combinations
+        (called from the read-only _validation_missed_slot_check startup
+        task), never creates a slot or admits an attempt — proven
+        BEHAVIORALLY below, not just structurally: a combination with no
+        established baseline is never reported missed, even though its
+        slot is absent (which — for an already-baselined combination —
+        WOULD be reported missed)."""
         import api.main as main_module
-        src = inspect.getsource(main_module)
-        catchup_start = src.index("async def _catchup_validation():")
-        catchup_src = src[catchup_start:src.index("task = asyncio.create_task(_weekly_refresh_loop())")]
-        guard_pos = catchup_src.index("has_established_schedule_baseline(")
-        create_pos = catchup_src.index("get_or_create_schedule_slot(\n")
-        assert guard_pos < create_pos, (
-            "has_established_schedule_baseline must be checked BEFORE "
-            "get_or_create_schedule_slot is called, not after"
-        )
+        assert not hasattr(main_module, "_catchup_validation")
+        assert not hasattr(main_module, "_short_catchup_validation")
+
+    def test_first_deployment_bootstrap_never_reports_missed(self, isolated_db, monkeypatch):
+        """No baseline has ever been established for ANY combination
+        (empty ledger) — every combination must be silently skipped, not
+        reported as missed, even though this week's slot is well past."""
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        now_utc = datetime(2026, 8, 15, 13, 0, tzinfo=timezone.utc)  # a Saturday, 1h past 12:00 UTC
+        missed, this_weeks_slot, next_slot = main_module.compute_missed_validation_combinations(now_utc)
+        assert missed == []
+        assert this_weeks_slot is not None
+        assert next_slot > this_weeks_slot
+
+    def test_genuinely_missed_combination_with_an_established_baseline_is_reported(self, isolated_db, monkeypatch):
+        """Once a baseline exists for medium/nifty100 (some PRIOR week's
+        slot was created), and THIS week's Saturday slot was never
+        created/admitted at all, it must be reported as missed — proving
+        the read-only check can distinguish "never run before" from
+        "has run before, but not this week"."""
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        last_week = T0  # establishes a baseline for medium/nifty100 (and every 3x2=6 combo below)
+        for h in ("medium", "long"):
+            for u in ("nifty100", "midcap", "us"):
+                get_or_create_schedule_slot(horizon=h, universe=u, scheduled_slot=last_week,
+                                             schedule_version="v1", now=last_week)
+        now_utc = last_week + timedelta(days=8)  # a week+ later, no new slot ever created for it
+        missed, this_weeks_slot, next_slot = main_module.compute_missed_validation_combinations(now_utc)
+        assert len(missed) == 6  # all 6 medium/long combos genuinely missed this week
+        assert this_weeks_slot is not None
+
+    def test_a_combination_that_completed_this_weeks_slot_is_not_reported_missed(self, isolated_db, monkeypatch):
+        import api.main as main_module
+        from services.market_calendar import last_saturday_1200_utc
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        now_utc = T0 + timedelta(hours=2)
+        this_saturday = last_saturday_1200_utc(now_utc)
+        for h in ("medium", "long"):
+            for u in ("nifty100", "midcap", "us"):
+                if h == "medium" and u == "nifty100":
+                    # Genuinely complete exactly this one combination via
+                    # the real admission path — the others stay untouched
+                    # ("due" once created below, or absent entirely).
+                    _fake_run_validation_factory(monkeypatch, isolated_db, horizon=h, universe=u)
+                    result = execute_admitted_validation(horizon=h, universe=u, trigger_type="scheduler",
+                                                          owner="scheduler-1", scheduled_slot=this_saturday, now=_real_now())
+                    assert result["ok"] is True
+                else:
+                    get_or_create_schedule_slot(horizon=h, universe=u, scheduled_slot=this_saturday,
+                                                 schedule_version="v1", now=this_saturday)
+        missed, this_weeks_slot, next_slot = main_module.compute_missed_validation_combinations(now_utc)
+        assert "medium/nifty100" not in missed
+        assert "medium/midcap" in missed  # still "due" — genuinely not yet run
+
+    def test_weekday_of_the_startup_check_never_changes_which_slot_is_evaluated(self, isolated_db, monkeypatch):
+        """Sunday/Monday/Wednesday startup — any weekday AFTER Saturday
+        Aug 15 and before the NEXT Saturday (Aug 22) — must all evaluate
+        against the exact same most-recent-Saturday slot (Aug 15). There
+        is no day-of-week special-casing anywhere in the missed-slot
+        check; it is purely a function of last_saturday_1200_utc(now_utc).
+        (Friday Aug 14 is deliberately excluded here — it precedes Aug
+        15 entirely, so it correctly resolves to the WEEK BEFORE's
+        Saturday, Aug 8, not Aug 15 — a separate, equally-covered case
+        below, not a special-case in the code.)"""
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        sunday = datetime(2026, 8, 16, 10, 0, tzinfo=timezone.utc)
+        monday = datetime(2026, 8, 17, 10, 0, tzinfo=timezone.utc)
+        wednesday = datetime(2026, 8, 19, 10, 0, tzinfo=timezone.utc)
+        for now_utc in (sunday, monday, wednesday):
+            missed, this_weeks_slot, next_slot = main_module.compute_missed_validation_combinations(now_utc)
+            assert this_weeks_slot == datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+            assert missed == []  # no baseline anywhere yet -> nothing reported, all silently skipped
+
+    def test_friday_before_the_slot_resolves_to_the_prior_completed_week(self, isolated_db, monkeypatch):
+        """A Friday startup necessarily precedes THAT week's own Saturday
+        slot — it evaluates against the PRIOR week's Saturday instead,
+        exactly like any other pre-Saturday weekday would. This is
+        ordinary calendar arithmetic, not a special "before this week"
+        branch that skips evaluation entirely."""
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        friday = datetime(2026, 8, 14, 10, 0, tzinfo=timezone.utc)
+        missed, this_weeks_slot, next_slot = main_module.compute_missed_validation_combinations(friday)
+        assert this_weeks_slot == datetime(2026, 8, 8, 12, 0, tzinfo=timezone.utc)
+        assert next_slot == datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+
+    def test_never_creates_a_slot_or_admits_an_attempt(self, isolated_db, monkeypatch):
+        """The single most important property: calling this function must
+        never itself create a schedule_slots row or an attempt — it is
+        purely observational."""
+        import api.main as main_module
+        from services.market_calendar import last_saturday_1200_utc
+        from services.validation_engine import find_schedule_slot
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        # Establish a baseline first (otherwise the bootstrap guard alone
+        # would explain the absence) — then call the check well past that
+        # week's slot, on a completely empty week with no slot ever made.
+        get_or_create_schedule_slot(horizon="medium", universe="nifty100", scheduled_slot=T0,
+                                     schedule_version="v1", now=T0)
+        now_utc = T0 + timedelta(days=8)
+        this_week = last_saturday_1200_utc(now_utc)
+        main_module.compute_missed_validation_combinations(now_utc)
+        # No slot exists for THIS week's instant — the check never created one.
+        assert find_schedule_slot(horizon="medium", universe="nifty100",
+                                    scheduled_slot=this_week, schedule_version="v1") is None
 
     def test_cadence_and_short_and_manual_behavior_unaffected_by_rollout1(self):
         """Sanity cross-check (Stage 3's non-regression list) — this
         correction touches only the catch-up bootstrap path; the
-        short-horizon inactivity invariant is untouched by it. (The
-        scheduler's own cadence constants are asserted separately in
-        TestCadenceUnchanged, which as of 2026-09 protects the new weekly
-        Saturday cadence rather than the superseded daily one — this test
-        no longer duplicates that assertion, to avoid two independently
-        maintained copies of the same literal-string check.)"""
+        short-horizon inclusion (2026-09: now via the shared
+        enabled_validation_combinations() gate, not a separate daily
+        schedule) is untouched by it. (The scheduler's own cadence
+        constants are asserted separately in TestCadenceUnchanged.)"""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
         assert "5 * 60" in src
-        # V-SCHED1C2B — the existing medium/long loop itself must still
-        # never reference horizon="short"; automatic short now exists,
-        # but strictly in its own separate, gated scheduler/catch-up
-        # functions (see TestAutoShortSchedulerStructure below), never
-        # inside this one.
-        assert "horizon=\"short\"" not in src
+        assert "enabled_validation_combinations()" in src
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -970,157 +1091,146 @@ class TestAutoShortConfigParser:
 
 
 class TestAutoShortSchedulerStructure:
-    """Items 27-38 — structural proof read directly from production
-    source, matching this file's existing main.py source-inspection
-    convention (used throughout TestCadenceUnchanged/TestShortRemainsInactive)."""
+    """2026-09 WEEKLY-ONLY POLICY: the independent daily short scheduler
+    this class used to test (_short_validation_schedule_loop, 03:30 IST)
+    is REMOVED — short is now admitted from the single weekly
+    _validation_schedule_loop, gated by enabled_validation_combinations().
+    These tests assert the removal is complete and the replacement
+    behavior is correct, rather than testing a function that no longer
+    exists."""
 
-    def test_short_loop_is_structurally_separate_function(self):
-        import inspect
+    def test_short_validation_schedule_loop_no_longer_exists(self):
         import api.main as main_module
-        assert hasattr(main_module, "_short_validation_schedule_loop")
-        short_src = inspect.getsource(main_module._short_validation_schedule_loop)
-        medium_src = inspect.getsource(main_module._validation_schedule_loop)
-        assert short_src != medium_src
+        assert not hasattr(main_module, "_short_validation_schedule_loop")
 
-    def test_short_loop_targets_0330_ist(self):
-        import inspect
-        import api.main as main_module
-        src = inspect.getsource(main_module._short_validation_schedule_loop)
-        assert "TARGET_HOUR = 3" in src
-        assert "TARGET_MINUTE = 30" in src
-
-    def test_flag_absent_means_no_calendar_resolution_or_execution(self, monkeypatch):
-        """A behavioral proof, not just structural: with the env var
-        unset, one full loop-body iteration must never call
-        resolve_latest_completed_short_session or execute_admitted_validation."""
-        import api.main as main_module
-        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
-        enabled = main_module._parse_auto_short_universes(
-            __import__("os").environ.get("VALIDATION_AUTO_SHORT_UNIVERSES")
-        )
-        assert enabled == ()
-
-    def test_enabled_universes_use_stable_canonical_order(self):
+    def test_no_independent_ist_anchored_daily_schedule_remains_anywhere(self):
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module)
-        # the loop must iterate `enabled` (already produced in canonical
-        # order by the parser) rather than re-deriving its own order
-        short_loop_src = inspect.getsource(main_module._short_validation_schedule_loop)
-        assert "for univ in enabled" in short_loop_src or "for univ in " in short_loop_src
+        assert "TARGET_HOUR = 3" not in src
+        assert "TARGET_MINUTE = 30" not in src
 
-    def test_short_scheduler_calls_only_execute_admitted_validation(self):
+    def test_flag_absent_means_short_excluded_from_the_weekly_batch(self, monkeypatch):
+        """Behavioral proof: with the env var unset, the single weekly
+        batch's combination list contains zero short entries — no
+        calendar resolution, no slot creation, no admission for short at
+        all that week."""
+        import api.main as main_module
+        monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
+        combos = main_module.enabled_validation_combinations()
+        assert all(h != "short" for h, _u in combos)
+
+    def test_enabled_universes_use_stable_canonical_order(self):
+        import api.main as main_module
+        import os
+        os.environ["VALIDATION_AUTO_SHORT_UNIVERSES"] = "us,nifty100,midcap"
+        try:
+            combos = main_module.enabled_validation_combinations()
+        finally:
+            del os.environ["VALIDATION_AUTO_SHORT_UNIVERSES"]
+        short_combos = [u for h, u in combos if h == "short"]
+        assert short_combos == ["nifty100", "midcap", "us"]
+
+    def test_weekly_scheduler_calls_only_execute_admitted_validation(self):
         import inspect
         import api.main as main_module
-        src = inspect.getsource(main_module._short_validation_schedule_loop)
+        src = inspect.getsource(main_module._validation_schedule_loop)
         assert "execute_admitted_validation(" in src
         assert "run_validation(" not in src
         assert "complete_running_attempt_with_computed_result(" not in src
 
-    def test_short_scheduler_retains_schedule_version_v1(self):
-        import inspect
-        import api.main as main_module
-        src = inspect.getsource(main_module._short_validation_schedule_loop)
-        assert 'schedule_version="v1"' in src
-
-    def test_short_scheduler_uses_resolved_close_as_scheduled_slot(self):
-        import inspect
-        import api.main as main_module
-        src = inspect.getsource(main_module._short_validation_schedule_loop)
-        assert "close_utc" in src
-        assert "scheduled_slot=" in src
-
-    def test_short_scheduler_retains_unexpected_exception_backoff(self):
-        import inspect
-        import api.main as main_module
-        src = inspect.getsource(main_module._short_validation_schedule_loop)
-        assert "asyncio.sleep(3600)" in src
-
-    def test_medium_loop_source_unaffected_by_the_short_scheduler_addition(self):
-        """Direct diff-style proof that _validation_schedule_loop's own
-        body was not touched by the V-SCHED1C2B short-scheduler addition —
-        the only sanctioned change anywhere near it was the ADDITION of a
-        new, separate function after it. (2026-09: the literal cadence
-        constants this originally asserted — TARGET_HOUR=6, weekday()==6 —
-        were themselves later, separately, and intentionally changed by
-        the weekly-Saturday schedule migration; see TestCadenceUnchanged
-        for that guard. This test now asserts only the properties that
-        remain true regardless of which cadence is active: the settle
-        delay and the inter-run stagger.)"""
+    def test_weekly_scheduler_retains_schedule_version_v1(self):
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
-        assert "await asyncio.sleep(180)" in src
-        assert "5 * 60" in src
+        assert 'schedule_version="v1"' in src
 
-    def test_no_horizon_short_execution_reachable_outside_gated_functions(self):
+    def test_weekly_scheduler_uses_the_shared_saturday_slot_not_a_resolved_session_close(self):
+        """2026-09: short no longer uses its own resolved exchange-session
+        close as its scheduled_slot (that was the daily design) — it now
+        shares the exact same `next_run` (Saturday 12:00 UTC) instant as
+        every other combination in the batch."""
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._validation_schedule_loop)
+        assert "scheduled_slot=slot_instant" in src
+        assert "close_utc" not in src
+
+    def test_weekly_scheduler_retains_unexpected_exception_backoff(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module._validation_schedule_loop)
+        assert "asyncio.sleep(3600)" in src
+
+    def test_no_horizon_short_execution_reachable_outside_the_shared_gate(self):
+        """Every place `execute_admitted_validation` could run short must
+        trace back to enabled_validation_combinations() — there is no
+        second, independently-maintained short-specific admission call
+        left anywhere in the module."""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module)
-        # every horizon="short" occurrence must be textually inside one
-        # of the two short-specific functions
-        short_sched_src = inspect.getsource(main_module._short_validation_schedule_loop)
-        lifespan_src = inspect.getsource(main_module.lifespan)
-        occurrences = src.count('horizon="short"')
-        occurrences_in_short_sched = short_sched_src.count('horizon="short"')
-        occurrences_in_lifespan = lifespan_src.count('horizon="short"')  # catch-up is nested inside lifespan
-        assert occurrences == occurrences_in_short_sched + occurrences_in_lifespan
+        assert src.count("execute_admitted_validation(\n") == 1
+        assert "resolve_latest_completed_short_session(" not in src
 
 
 class TestAutoShortCatchup:
-    """Items 39-46."""
+    """2026-09 WEEKLY-ONLY POLICY: the short-specific startup catch-up
+    this class used to test (_short_catchup_validation, which EXECUTED a
+    missed session's validation) is REMOVED. All startup behavior for a
+    missed slot — short included — now goes through the single, read-only
+    _validation_missed_slot_check, which never executes anything."""
 
     def test_catchup_disabled_when_allowlist_empty(self, monkeypatch):
         import api.main as main_module
         monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
         assert main_module._parse_auto_short_universes(None) == ()
 
-    def test_lifespan_source_contains_short_catchup_function(self):
+    def test_short_catchup_validation_no_longer_exists(self):
+        import api.main as main_module
+        assert not hasattr(main_module, "_short_catchup_validation")
+        assert not hasattr(main_module, "_catchup_validation")
+
+    def test_lifespan_source_contains_the_unified_missed_slot_check(self):
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module.lifespan)
-        assert "_short_catchup_validation" in src
+        assert "async def _validation_missed_slot_check():" in src
+        assert "async def _short_catchup_validation():" not in src
+        assert "async def _catchup_validation():" not in src
 
     @staticmethod
-    def _short_catchup_body_only(main_module):
-        """Slice out _short_catchup_validation's source, then drop its
-        own docstring — several docstring sentences deliberately name
-        the real function calls in prose (e.g. "exactly one
-        get_or_create_schedule_slot() call per universe"), which would
-        otherwise produce false substring matches before the real code
-        even starts."""
+    def _missed_slot_check_body_only(main_module):
+        """Slice out _validation_missed_slot_check's source (see
+        TestCatchupBootstrapSafety for the equivalent baseline-ordering
+        test on this same function)."""
         import inspect
         src = inspect.getsource(main_module.lifespan)
-        catchup_start = src.index("async def _short_catchup_validation():")
-        catchup_end = src.index("task = asyncio.create_task(_weekly_refresh_loop())")
-        catchup_src = src[catchup_start:catchup_end]
-        first_quote = catchup_src.index('"""')
-        second_quote = catchup_src.index('"""', first_quote + 3)
-        return catchup_src[second_quote + 3:]
+        start = src.index("async def _validation_missed_slot_check():")
+        end = src.index("task = asyncio.create_task(_weekly_refresh_loop())")
+        return src[start:end]
 
-    def test_short_catchup_checks_baseline_before_creating_slot(self):
-        import api.main as main_module
-        body = self._short_catchup_body_only(main_module)
-        guard_pos = body.index("has_established_schedule_baseline(")
-        create_pos = body.index("get_or_create_schedule_slot(")
-        assert guard_pos < create_pos
-
-    def test_short_catchup_resolves_only_latest_session_no_historical_walk(self):
-        import api.main as main_module
-        body = self._short_catchup_body_only(main_module)
-        # exactly one resolve call per universe iteration — no loop over
-        # a range/history of sessions
-        assert "for _ in range" not in body
-        assert body.count("resolve_latest_completed_short_session(") == 1
-
-    def test_short_catchup_uses_canonical_close_utc_slot(self):
+    def test_missed_slot_check_never_resolves_a_daily_exchange_session(self):
+        """The old short catch-up resolved the latest completed exchange
+        session per universe (a daily-granularity concept) — the weekly
+        replacement has no such concept at all; it only compares against
+        the shared Saturday 12:00 UTC slot."""
         import inspect
         import api.main as main_module
-        src = inspect.getsource(main_module.lifespan)
-        catchup_start = src.index("async def _short_catchup_validation():")
-        catchup_end = src.index("task = asyncio.create_task(_weekly_refresh_loop())")
-        catchup_src = src[catchup_start:catchup_end]
-        assert "scheduled_slot=resolution.close_utc" in catchup_src
+        assert "resolve_latest_completed_short_session(" not in inspect.getsource(main_module)
+
+    def test_missed_slot_check_uses_the_shared_weekly_slot_helpers(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module.compute_missed_validation_combinations)
+        assert "last_saturday_1200_utc(" in src
+        assert "next_saturday_1200_utc(" in src
+
+    def test_missed_slot_check_iterates_the_same_shared_combinations_list(self):
+        import inspect
+        import api.main as main_module
+        src = inspect.getsource(main_module.compute_missed_validation_combinations)
+        assert "enabled_validation_combinations()" in src
 
     def test_manual_short_attempt_remains_unbindable_to_scheduled_slot(self, isolated_db):
         """Reuses the existing manual-attempt structural guarantee
