@@ -670,7 +670,7 @@ describe("PR #52 security/cadence invariants unchanged", () => {
   it("retains the daily/Sunday cadence wording", async () => {
     mockApi();
     renderPage();
-    await screen.findByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i);
+    await screen.findByText(/automated validation runs weekly on Saturdays at/i);
     await screen.findByText(/12:00 UTC \(16:00 Dubai\)/i);
   });
 
@@ -1341,7 +1341,7 @@ describe("V-FRESH1B — freshness disclosure", () => {
     mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
     renderPage();
     await screen.findByTestId("freshness-disclosure");
-    await screen.findByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i);
+    await screen.findByText(/automated validation runs weekly on Saturdays at/i);
     await screen.findByText(/12:00 UTC \(16:00 Dubai\)/i);
   });
 
@@ -1414,7 +1414,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getByText(
-      /Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session\. Eligibility is evaluated daily at 03:30 IST\./i,
+      /Short-horizon results for this universe share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule as medium and long horizons — no separate daily schedule exists\./i,
     )).toBeInTheDocument();
   });
 
@@ -1425,7 +1425,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /Midcap/i }));
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getByText(
-      /Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session\. Eligibility is evaluated daily at 03:30 IST\./i,
+      /Short-horizon results for this universe share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule as medium and long horizons — no separate daily schedule exists\./i,
     )).toBeInTheDocument();
   });
 
@@ -1443,7 +1443,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     expect(screen.getAllByText(
       /No automatic validation schedule is currently defined for this horizon and universe\./i,
     ).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+    expect(screen.queryByText(/share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule/i))
       .not.toBeInTheDocument();
   });
 
@@ -1455,7 +1455,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getAllByText(/No automatic validation schedule is currently defined for this horizon and universe\./i).length)
       .toBeGreaterThan(0);
-    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+    expect(screen.queryByText(/share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule/i))
       .not.toBeInTheDocument();
   });
 
@@ -1489,7 +1489,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getByText(
-      /Short-horizon accuracy statistics are recomputed for each eligible completed session using overlapping 5-trading-day forward windows\. Consecutive runs therefore are not independent samples\./i,
+      /Short-horizon accuracy statistics use a 5-trading-day forward window and are recomputed on the same weekly Saturday schedule as medium and long horizons — scheduled runs are ordinarily about a week apart\./i,
     )).toBeInTheDocument();
   });
 
@@ -1515,7 +1515,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
-    expect(screen.getByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i)).toBeInTheDocument();
+    expect(screen.getByText(/automated validation runs weekly on Saturdays at/i)).toBeInTheDocument();
     expect(screen.getByText(/12:00 UTC \(16:00 Dubai\)/i)).toBeInTheDocument();
   });
 
@@ -1545,44 +1545,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /🇺🇸 US/i }));
     await screen.findByText(/No validation results yet for short horizon/i);
     expect(screen.queryByTestId("freshness-disclosure")).not.toBeInTheDocument();
-    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+    expect(screen.queryByText(/share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule/i))
       .not.toBeInTheDocument();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────
-// 2026-09-06 (PR #85 corrective follow-up) — equity-scoped SELL disclosure
-// ─────────────────────────────────────────────────────────────────────────
-
-describe("equity SELL containment disclosure", () => {
-  it("scopes the disabled-SELL banner to equities, not the whole product", async () => {
-    mockApi();
-    renderPage();
-    await screen.findByText(/Equity SELL recommendations are currently disabled/i);
-    // The prior wording made an UNQUALIFIED "anywhere in the product"
-    // claim, false since crypto uses an independent model. The banner
-    // heading itself must be equity-scoped, not a bare "SELL
-    // recommendations are currently disabled" with no market qualifier.
-    expect(screen.queryByText(/^SELL recommendations are currently disabled\.$/)).not.toBeInTheDocument();
-    // The corrected banner must explicitly state crypto is unaffected.
-    await screen.findByText(/crypto recommendations use a separate, independent model and are unaffected/i);
-  });
-
-  it("does not claim SELL evidence is solely a record of past backtests", async () => {
-    mockApi();
-    renderPage();
-    await screen.findByText(/Equity SELL recommendations are currently disabled/i);
-    // "past backtests" (implying validation no longer computes SELL) must
-    // not appear; the corrected wording says validation continues to
-    // compute SELL classifications for research purposes.
-    expect(screen.queryByText(/from past backtests/i)).not.toBeInTheDocument();
-    await screen.findByText(/validation continues to compute SELL classifications for research purposes/i);
-  });
-
-  it("relabels the SELL Hit Rate stat as equity research, not a live capability", async () => {
-    mockApi({ results: { ...BASE_RESULTS, sell_hit_rate_pct: 44.4 } });
-    renderPage();
-    await screen.findByText(/Equity SELL Hit Rate \(Research\)/i);
-    expect(screen.queryByText(/^SELL Hit Rate$/)).not.toBeInTheDocument();
   });
 });

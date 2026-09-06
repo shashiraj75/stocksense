@@ -260,115 +260,114 @@ async def _price_alerts_check_loop():
 from services.market_calendar import parse_auto_short_universes as _parse_auto_short_universes  # noqa: E402
 
 
-async def _short_validation_schedule_loop():
-    """
-    V-SCHED1C2B — automatic short-horizon scheduler, structurally
-    SEPARATE from _validation_schedule_loop (medium/long) above. Evaluated
-    at 03:30 IST (22:00 UTC the previous day) — confirmed safely after the
-    previous NYSE regular close in both EDT (20:00 UTC) and EST (21:00
-    UTC), with clear separation before the existing 06:00 IST medium/long
-    window.
+def enabled_validation_combinations() -> list[tuple[str, str]]:
+    """The complete set of (horizon, universe) combinations the single
+    weekly Saturday 12:00 UTC batch currently admits.
 
-    Inactive by default: VALIDATION_AUTO_SHORT_UNIVERSES is re-read from
-    the environment on EVERY cycle (never cached at startup), so an
-    ordinary redeploy/config change can enable or disable it without a
-    code change. Missing/blank/invalid values enable NO universe — no
-    calendar resolution, no slot creation, no admission, no execution
-    occurs at all in that case.
+    2026-09 WEEKLY-ONLY POLICY (SES-006-governed, explicit user approval):
+    short, medium AND long horizons now share the exact same weekly slot
+    — this replaces the former independent daily short-horizon schedule
+    (03:30 IST) entirely. Medium/long remain unconditionally enabled for
+    all three universes (unchanged from before). Short is included ONLY
+    for whichever universes VALIDATION_AUTO_SHORT_UNIVERSES currently
+    enables — re-read from the environment on every call (never cached),
+    so an ordinary redeploy/config change can enable or disable it
+    without a code change, exactly as the old short scheduler did. This
+    is the SINGLE place that decides "what does an admitted weekly batch
+    contain" — the live scheduler and the startup missed-slot check both
+    call this, never duplicating the enabled-universe logic."""
+    enabled_short = _parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
+    combos: list[tuple[str, str]] = [("short", u) for u in enabled_short]
+    combos += [(h, u) for h in ("medium", "long") for u in ("nifty100", "midcap", "us")]
+    return combos
 
-    Each enabled universe is evaluated strictly sequentially (awaited to
-    completion before the next begins) — never concurrently within this
-    process — and only through execute_admitted_validation(), the same
-    shared admission path medium/long/catch-up/manual already use, so
-    the global lease, fencing, heartbeat, and atomic persistence
-    invariants are inherited unchanged, not reimplemented.
-    """
-    from datetime import datetime, timezone, timedelta
-    import uuid
-    from services.market_calendar import resolve_latest_completed_short_session
-    from services.validation_engine import execute_admitted_validation
 
-    await asyncio.sleep(220)  # let server fully settle; distinct stagger from the medium/long loop's 180s
-    log.info("[validation_short_scheduler] started")
-    IST = timezone(timedelta(hours=5, minutes=30))
-    TARGET_HOUR = 3
-    TARGET_MINUTE = 30
-    owner = f"scheduler-short-{uuid.uuid4()}"
+def compute_missed_validation_combinations(now_utc):
+    """Pure(-ish — reads the durable ledger, never writes it), directly
+    testable core of the startup missed-slot check. Returns
+    (missed, this_weeks_slot, next_slot):
+      - this_weeks_slot is None (missed always []) if `now_utc` is still
+        before this week's Saturday 12:00 UTC window — there is nothing
+        to have missed yet.
+      - Otherwise, `missed` lists "horizon/universe" for every currently
+        enabled combination whose slot for THIS week either doesn't exist
+        yet or is still "due" — i.e. never reached a non-"due" status —
+        EXCLUDING any combination that has never established a baseline
+        at all (first deployment, not a missed run).
+    Never creates a slot, never admits an attempt — read-only."""
+    from services.market_calendar import last_saturday_1200_utc, next_saturday_1200_utc
+    from services.validation_engine import find_schedule_slot, has_established_schedule_baseline
 
-    while True:
-        try:
-            now_ist = datetime.now(IST)
-            next_run = now_ist.replace(hour=TARGET_HOUR, minute=TARGET_MINUTE, second=0, microsecond=0)
-            if now_ist >= next_run:
-                next_run += timedelta(days=1)
-            sleep_secs = (next_run - now_ist).total_seconds()
-            log.info(f"[validation_short_scheduler] next short evaluation at {next_run.isoformat()} IST (in {sleep_secs/3600:.1f}h)")
-            await asyncio.sleep(sleep_secs)
+    if now_utc.tzinfo is None:
+        raise ValueError("compute_missed_validation_combinations: now_utc must be timezone-aware")
+    this_weeks_slot = last_saturday_1200_utc(now_utc)
+    next_slot = next_saturday_1200_utc(now_utc)
+    if now_utc < this_weeks_slot:
+        return [], None, next_slot
 
-            enabled = _parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
-            if not enabled:
-                log.info("[validation_short_scheduler] no universes enabled — skipping this cycle")
-                continue
-
-            loop = asyncio.get_event_loop()
-            now_utc = datetime.now(timezone.utc)
-            for univ in enabled:
-                try:
-                    resolution = resolve_latest_completed_short_session(univ, now_utc=now_utc)
-                    if resolution.status != "eligible":
-                        log.info(f"[validation_short_scheduler] short/{univ} not eligible — reason={resolution.reason}")
-                        continue
-                    log.info(f"[validation_short_scheduler] starting short/{univ} run (session={resolution.session_date})…")
-                    result = await loop.run_in_executor(
-                        None,
-                        lambda u=univ, close_utc=resolution.close_utc: execute_admitted_validation(
-                            horizon="short", universe=u, trigger_type="scheduler", owner=owner,
-                            scheduled_slot=close_utc, schedule_version="v1",
-                        ),
-                    )
-                    if result.get("ok"):
-                        log.info(f"[validation_short_scheduler] short/{univ} complete (run_id={result.get('run_id')})")
-                    else:
-                        log.warning(f"[validation_short_scheduler] short/{univ} rejected/failed — reason={result.get('reason')}")
-                except Exception as e:
-                    log.warning(f"[validation_short_scheduler] short/{univ} error: {e}")
-
-        except Exception as e:
-            log.warning(f"[validation_short_scheduler] scheduler error: {e}")
-            await asyncio.sleep(3600)  # back off 1h on unexpected error, same convention as the medium/long loop
+    missed: list[str] = []
+    for horizon, univ in enabled_validation_combinations():
+        # V-SCHED1C1-ROLLOUT1 bootstrap safety, generalized: the very
+        # first deployment of a given (horizon, universe) combination —
+        # before its first-ever weekly tick has even happened — must
+        # never be reported as "missed".
+        if not has_established_schedule_baseline(horizon=horizon, universe=univ, schedule_version="v1"):
+            continue
+        slot = find_schedule_slot(horizon=horizon, universe=univ, scheduled_slot=this_weeks_slot, schedule_version="v1")
+        if slot is None or slot["status"] == "due":
+            missed.append(f"{horizon}/{univ}")
+    return missed, this_weeks_slot, next_slot
 
 
 async def _validation_schedule_loop():
     """
     Run walk-forward validation on a schedule, UTC-anchored:
-      - Medium AND long horizons: every Saturday at 12:00 UTC
-        (16:00 Dubai / 17:30 IST).
+      - Short, medium AND long horizons: every Saturday at 12:00 UTC
+        (16:00 Dubai / 17:30 IST) — ONE weekly slot for all three.
     Sleeps until the next scheduled window, then fires in a thread pool
     so it never blocks the event loop.
 
-    2026-09 SES-006-governed change (explicit user approval): consolidated
-    from "medium daily at 06:00 IST + long weekly on Sunday at 06:00 IST"
-    to this single weekly Saturday 12:00 UTC window for BOTH horizons —
-    this is the "daily to weekly" schedule change. The wake/trigger cadence
-    is the ONLY thing that changed: universes (nifty100, midcap, us —
-    unmodified, including "us", whose existing pass/fail governance state
-    is untouched), the admission path, and the ledger/fencing/persistence
-    contract below are byte-for-byte identical to before. See
-    services/market_calendar.py's next_saturday_1200_utc/
+    2026-09 WEEKLY-ONLY POLICY (SES-006-governed, explicit user approval):
+    consolidates the PREVIOUS two independent schedules —
+    (a) medium+long, already weekly (Saturday 12:00 UTC), and
+    (b) short, previously an INDEPENDENT DAILY schedule at 03:30 IST
+        (services/market_calendar.py's resolve_latest_completed_short_
+        session, evaluated once per calendar day) —
+    into this single weekly window covering all three horizons. The old
+    per-day short scheduler (_short_validation_schedule_loop) and its
+    startup catch-up (_short_catchup_validation) are REMOVED, not merely
+    disabled — there is no code path left in this process that can start
+    an automatic validation run outside this one weekly tick (the startup
+    missed-slot check below is read-only/log-only; see
+    _validation_missed_slot_check).
+
+    Universes/enabled-set logic: see enabled_validation_combinations()
+    above — the SINGLE shared definition of "what's in this week's
+    batch", so the live scheduler and the missed-slot check can never
+    silently drift apart on which combinations are expected.
+
+    See services/market_calendar.py's next_saturday_1200_utc/
     last_saturday_1200_utc — the single shared implementation this loop,
-    _catchup_validation, and the /status endpoint's displayed next-run all
-    call, so there is exactly one definition of "the weekly slot", never
-    three independently maintained copies of the same day-of-week math.
+    _validation_missed_slot_check, and the /status endpoint's displayed
+    next-run all call, so there is exactly one definition of "the weekly
+    slot", never independently maintained copies of the same
+    day-of-week math.
 
     V-SCHED1C1 — each run still goes through
     services.validation_engine.execute_admitted_validation(), the single
-    shared admission path (also used by _catchup_validation and the
-    authenticated manual /run route) built on the V-SCHED1B durable ledger
-    and global execution lease. A rejected/failed admission is logged
-    distinctly from a genuine completion — this closes the previously
-    forensically-confirmed defect where a rejected claim was logged
-    identically to "complete" because the scheduler discarded
-    run_validation()'s return value entirely.
+    shared admission path (also used by the authenticated manual /run
+    route) built on the V-SCHED1B durable ledger and global execution
+    lease. A rejected/failed admission is logged distinctly from a
+    genuine completion.
+
+    Timing contract: Saturday 12:00 UTC is the scheduled BATCH START, not
+    a requirement that every combination start simultaneously — each
+    combination is awaited to completion before the next begins (never
+    concurrently within this process), with an explicit 5-minute gap
+    between them, exactly as before. A batch with (currently) up to
+    3 short + 6 medium/long = 9 combinations can therefore continue for
+    hours past the nominal 12:00 UTC instant — this is expected and
+    matches the existing medium/long behavior, not a new risk.
     """
     from datetime import datetime, timezone, timedelta
     import uuid
@@ -391,31 +390,31 @@ async def _validation_schedule_loop():
             )
             await asyncio.sleep(sleep_secs)
 
-            # Run medium AND long validation for all three universes —
-            # both horizons now share the single weekly slot, staggered by
-            # 5 min between every horizon/universe pair so nothing runs
-            # concurrently on the same admission owner.
+            # All currently-enabled combinations share the single weekly
+            # slot, staggered by 5 min between every horizon/universe pair
+            # so nothing runs concurrently on the same admission owner —
+            # relies entirely on the existing global lease/fencing
+            # machinery in execute_admitted_validation(), not reimplemented.
             from services.validation_engine import execute_admitted_validation
             loop = asyncio.get_event_loop()
             slot_instant = next_run  # already UTC-aware
-            for horizon in ("medium", "long"):
-                for univ in ("nifty100", "midcap", "us"):
-                    try:
-                        log.info(f"[validation_scheduler] starting {horizon}/{univ} run…")
-                        result = await loop.run_in_executor(
-                            None,
-                            lambda h=horizon, u=univ: execute_admitted_validation(
-                                horizon=h, universe=u, trigger_type="scheduler", owner=owner,
-                                scheduled_slot=slot_instant, schedule_version="v1",
-                            ),
-                        )
-                        if result.get("ok"):
-                            log.info(f"[validation_scheduler] {horizon}/{univ} complete (run_id={result.get('run_id')})")
-                        else:
-                            log.warning(f"[validation_scheduler] {horizon}/{univ} rejected/failed — reason={result.get('reason')}")
-                    except Exception as e:
-                        log.warning(f"[validation_scheduler] {horizon}/{univ} error: {e}")
-                    await asyncio.sleep(5 * 60)  # 5-min gap between horizon/universe runs
+            for horizon, univ in enabled_validation_combinations():
+                try:
+                    log.info(f"[validation_scheduler] starting {horizon}/{univ} run…")
+                    result = await loop.run_in_executor(
+                        None,
+                        lambda h=horizon, u=univ: execute_admitted_validation(
+                            horizon=h, universe=u, trigger_type="scheduler", owner=owner,
+                            scheduled_slot=slot_instant, schedule_version="v1",
+                        ),
+                    )
+                    if result.get("ok"):
+                        log.info(f"[validation_scheduler] {horizon}/{univ} complete (run_id={result.get('run_id')})")
+                    else:
+                        log.warning(f"[validation_scheduler] {horizon}/{univ} rejected/failed — reason={result.get('reason')}")
+                except Exception as e:
+                    log.warning(f"[validation_scheduler] {horizon}/{univ} error: {e}")
+                await asyncio.sleep(5 * 60)  # 5-min gap between horizon/universe runs
 
         except Exception as e:
             log.warning(f"[validation_scheduler] scheduler error: {e}")
@@ -648,149 +647,49 @@ async def lifespan(app: FastAPI):
             import services.daily_picks as _dp2
             _dp2._generating[market] = False
 
-    # Catch-up validation: if server restarted after 6 AM IST and today's run
-    # was missed (e.g. due to deployment), fire it in the background.
+    # 2026-09 WEEKLY-ONLY POLICY (SES-006-governed, explicit user
+    # approval): startup missed-slot check — READ-ONLY, NEVER EXECUTES
+    # VALIDATION. This deliberately REPLACES the previous
+    # _catchup_validation/_short_catchup_validation functions, which used
+    # to admit and RUN a missed slot's validation directly from startup.
+    # That behavior is an "unscheduled startup backfill" by definition —
+    # exactly what the current policy prohibits. The only code path in
+    # this process that may ever start an automatic validation run is
+    # _validation_schedule_loop's own weekly tick, above.
     #
-    # V-SCHED1C1 — fixes the forensically-confirmed "any-universe
-    # suppression" defect: the old any-universe get_last_run_time("medium")
-    # lookup could suppress catch-up for medium/nifty100 specifically just
-    # because medium/midcap or medium/us happened to run more recently.
-    # Suppression is now scoped to the exact canonical (medium, nifty100,
-    # today's 06:00 IST slot, schedule_version) slot's own status — a slot
-    # that is anything other than 'due' has already been claimed or
-    # resolved for exactly that identity, nothing else's activity can
-    # suppress it. Coverage is deliberately NOT expanded to midcap/us/long
-    # in this phase — same scope as the pre-V-SCHED1C1 catch-up.
-    async def _catchup_validation():
+    # Lateness tolerance for automatic EXECUTION is therefore explicitly
+    # ZERO: if this week's Saturday 12:00 UTC slot has passed without
+    # every currently-enabled combination reaching a non-"due" status,
+    # this function logs exactly which combinations were missed and when
+    # the next scheduled slot is — it never creates a slot, never admits
+    # an attempt, never calls execute_admitted_validation. The lease and
+    # ledger machinery's own stale-lease recovery / terminal-status
+    # reconciliation (inside admit_validation_attempt, unchanged) remains
+    # fully available to the NEXT scheduled Saturday tick if a prior
+    # attempt crashed mid-run — this function does not touch or bypass
+    # that; it is purely an observability log line.
+    async def _validation_missed_slot_check():
         from datetime import datetime, timezone
-        import uuid
-        from services.market_calendar import last_saturday_1200_utc
         await asyncio.sleep(300)  # wait 5 min for server to fully settle
         try:
             now_utc = datetime.now(timezone.utc)
-            # 2026-09: generalized from "today's 06:00 IST slot" (daily) to
-            # "this week's Saturday 12:00 UTC slot" (weekly) — the direct
-            # analogue for the new cadence, using the same shared helper
-            # the live scheduler uses (services/market_calendar.py) so slot
-            # identity always matches between the two trigger sources.
-            this_weeks_slot = last_saturday_1200_utc(now_utc)
-            if now_utc < this_weeks_slot:
-                return  # before this week's scheduled window — nothing to catch up
-            from services.validation_engine import (
-                get_or_create_schedule_slot, execute_admitted_validation, has_established_schedule_baseline,
-            )
-            # V-SCHED1C1-ROLLOUT1 — bootstrap safety: an empty, never-
-            # activated ledger (the very first deployment of this feature,
-            # started after this week's Saturday 12:00 UTC) must NOT be
-            # treated as "a run was missed". get_or_create_schedule_slot
-            # would otherwise create this week's slot on the spot and
-            # catch-up would immediately fire a validation run on first
-            # boot — there is nothing to have missed yet. Once the normal
-            # scheduler (or a genuine future catch-up) has established ANY
-            # slot for this identity, this guard is permanently satisfied
-            # and normal catch-up behavior resumes unchanged.
-            if not has_established_schedule_baseline(horizon="medium", universe="nifty100", schedule_version="v1"):
-                log.info(
-                    "[catchup] no established schedule baseline yet for medium/nifty100 — "
-                    "this is the first deployment, not a missed run; skipping bootstrap "
-                    "catch-up. The normal scheduler will establish the first slot at the "
-                    "next Saturday 12:00 UTC window."
+            missed, this_weeks_slot, next_slot = compute_missed_validation_combinations(now_utc)
+            if this_weeks_slot is None:
+                return  # before this week's scheduled window — nothing to have missed yet
+            if missed:
+                log.warning(
+                    f"[validation_scheduler] missed this week's Saturday 12:00 UTC slot "
+                    f"({this_weeks_slot.isoformat()}) for: {', '.join(missed)} — recording as missed, "
+                    f"no off-schedule backfill will be started. Next scheduled slot: {next_slot.isoformat()}."
                 )
-                return
-            slot_instant = this_weeks_slot  # already UTC-aware
-            slot = get_or_create_schedule_slot(
-                horizon="medium", universe="nifty100", scheduled_slot=slot_instant,
-                schedule_version="v1", now=now_utc,
-            )
-            if slot["status"] != "due":
-                log.info(f"[catchup] medium/nifty100 slot already {slot['status']} — skipping")
-                return
-            log.info("[catchup] missed this week's Saturday 12:00 UTC validation — running now…")
-            owner = f"catchup-{uuid.uuid4()}"
-            loop2 = asyncio.get_running_loop()
-            result = await loop2.run_in_executor(
-                None,
-                lambda: execute_admitted_validation(
-                    horizon="medium", universe="nifty100", trigger_type="catchup",
-                    owner=owner, slot_id=slot["id"],
-                ),
-            )
-            if result.get("ok"):
-                log.info(f"[catchup] catch-up validation complete (run_id={result.get('run_id')})")
             else:
-                log.warning(f"[catchup] catch-up rejected/failed — reason={result.get('reason')}")
+                log.info(
+                    f"[validation_scheduler] this week's Saturday 12:00 UTC slot "
+                    f"({this_weeks_slot.isoformat()}) has no missed combinations. "
+                    f"Next scheduled slot: {next_slot.isoformat()}."
+                )
         except Exception as e:
-            log.warning(f"[catchup] validation catch-up error: {e}")
-
-    async def _short_catchup_validation():
-        """V-SCHED1C2B — bounded, per-universe short-horizon startup
-        catch-up, structurally separate from _catchup_validation
-        (medium/nifty100) above. Inactive by default: VALIDATION_AUTO_
-        SHORT_UNIVERSES is re-read here too, so an empty/unset allowlist
-        skips entirely with zero calendar resolution or ledger touch.
-
-        For each ENABLED universe, resolves ONLY the single latest
-        completed applicable session (never a historical backlog walk —
-        exactly one resolve_latest_completed_short_session() call per
-        universe, exactly one get_or_create_schedule_slot() call per
-        universe) and — exactly like medium's own bootstrap guard —
-        skips cleanly without creating any slot/attempt if no baseline
-        has ever been established for that exact (short, universe, v1)
-        identity yet. This guarantees the first deployment can never
-        launch an unexpected three-run bootstrap storm: the first
-        baseline for each universe is established only by a later normal
-        03:30 IST scheduler window for an already-enabled universe."""
-        from datetime import datetime, timezone
-        import uuid
-        await asyncio.sleep(340)  # distinct stagger from medium catch-up's 300s
-        try:
-            enabled = _parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
-            if not enabled:
-                return
-            from services.market_calendar import resolve_latest_completed_short_session
-            from services.validation_engine import (
-                get_or_create_schedule_slot, execute_admitted_validation, has_established_schedule_baseline,
-            )
-            now_utc = datetime.now(timezone.utc)
-            loop3 = asyncio.get_running_loop()
-            for univ in enabled:
-                try:
-                    resolution = resolve_latest_completed_short_session(univ, now_utc=now_utc)
-                    if resolution.status != "eligible":
-                        log.info(f"[short_catchup] short/{univ} not eligible — reason={resolution.reason}")
-                        continue
-                    if not has_established_schedule_baseline(horizon="short", universe=univ, schedule_version="v1"):
-                        log.info(
-                            f"[short_catchup] no established schedule baseline yet for short/{univ} — "
-                            "this is the first deployment, not a missed run; skipping bootstrap "
-                            "catch-up. The normal scheduler will establish the first slot at the "
-                            "next 03:30 IST window."
-                        )
-                        continue
-                    slot = get_or_create_schedule_slot(
-                        horizon="short", universe=univ, scheduled_slot=resolution.close_utc,
-                        schedule_version="v1", now=now_utc,
-                    )
-                    if slot["status"] != "due":
-                        log.info(f"[short_catchup] short/{univ} slot already {slot['status']} — skipping")
-                        continue
-                    log.info(f"[short_catchup] missed short/{univ} session {resolution.session_date} — running now…")
-                    owner = f"catchup-short-{uuid.uuid4()}"
-                    result = await loop3.run_in_executor(
-                        None,
-                        lambda: execute_admitted_validation(
-                            horizon="short", universe=univ, trigger_type="catchup",
-                            owner=owner, slot_id=slot["id"],
-                        ),
-                    )
-                    if result.get("ok"):
-                        log.info(f"[short_catchup] short/{univ} catch-up complete (run_id={result.get('run_id')})")
-                    else:
-                        log.warning(f"[short_catchup] short/{univ} rejected/failed — reason={result.get('reason')}")
-                except Exception as e:
-                    log.warning(f"[short_catchup] short/{univ} error: {e}")
-        except Exception as e:
-            log.warning(f"[short_catchup] validation catch-up error: {e}")
+            log.warning(f"[validation_scheduler] missed-slot check error: {e}")
 
     task = asyncio.create_task(_weekly_refresh_loop())
     keepalive = asyncio.create_task(_keepalive_loop())
@@ -798,9 +697,7 @@ async def lifespan(app: FastAPI):
     warmup_task = asyncio.create_task(_warmup_loop())
     crumb_task = asyncio.create_task(_yfinance_crumb_loop())
     validation_task = asyncio.create_task(_validation_schedule_loop())
-    catchup_task = asyncio.create_task(_catchup_validation())
-    short_validation_task = asyncio.create_task(_short_validation_schedule_loop())
-    short_catchup_task = asyncio.create_task(_short_catchup_validation())
+    missed_slot_check_task = asyncio.create_task(_validation_missed_slot_check())
     from zoneinfo import ZoneInfo
     from datetime import timezone as _tz, timedelta as _td
     _IST = _tz(_td(hours=5, minutes=30))
@@ -868,7 +765,7 @@ async def lifespan(app: FastAPI):
     warmup_task.cancel()
     crumb_task.cancel()
     validation_task.cancel()
-    catchup_task.cancel()
+    missed_slot_check_task.cancel()
     picks_catchup_task.cancel()
     picks_catchup_task_us.cancel()
     trade_notify_task.cancel()
@@ -876,7 +773,7 @@ async def lifespan(app: FastAPI):
     us_movers_task.cancel()
     price_alerts_task.cancel()
     daily_picks_orphan_sweep_task.cancel()
-    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, catchup_task,
+    for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, missed_slot_check_task,
               picks_catchup_task, picks_catchup_task_us, trade_notify_task, trade_exit_monitor_task,
               us_movers_task, price_alerts_task, daily_picks_orphan_sweep_task):
         try:
