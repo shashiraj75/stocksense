@@ -1226,6 +1226,12 @@ export default function DailyPicksPage() {
   // declared (hooks must be called unconditionally) but only read/rendered
   // when the hold is off, so it has no effect while the hold is active.
   const [showTruth, setShowTruth] = useState(false);
+  // Quality-over-clutter simplification (2026-09-07 user request) — the
+  // methodology paragraphs, global macro strip, and historical track record
+  // panel are all real disclosures/compliance content that must stay
+  // available, but the user should see the actual picks first. Collapsed
+  // by default; nothing inside is removed, only deferred behind one click.
+  const [showDetails, setShowDetails] = useState(false);
 
   const marketCfg = MARKETS.find(m => m.key === market)!;
 
@@ -1465,36 +1471,56 @@ export default function DailyPicksPage() {
       <p className="text-sm text-gray-400">
         {formatPublicationPolicyCopy(publicationPolicy)}
         {" · "}{market === "US" ? "base picks generated" : "generated daily"} at {marketCfg.genTime}
-        {market === "US" ? ` · Premarket review ${PREMARKET_REVIEW_SCHEDULE_LABEL.toLowerCase()}, after today's base picks complete` : ""}
+      </p>
+      <button
+        type="button"
+        onClick={() => setShowDetails(v => !v)}
+        className="text-[11px] text-gray-500 hover:text-gray-300 underline underline-offset-2"
+      >
+        {showDetails ? "Hide" : "Show"} methodology, coverage &amp; historical accuracy details
+      </button>
+      {/* Quality-over-clutter: the coverage caveat, conviction-semantic
+          caveat, premarket-review sub-schedule, market regime/AI engine
+          strip, global macro strip, and historical track record panel are
+          all real disclosures — kept verbatim, just collapsed by default
+          so the picks below are what the user sees first. */}
+      {showDetails && (
+      <div className="space-y-1 pt-1">
+        {market === "US" && (
+          <p className="text-[11px] text-gray-500">
+            Premarket review {PREMARKET_REVIEW_SCHEDULE_LABEL.toLowerCase()}, after today's base picks complete.
+          </p>
+        )}
         {/* Release 12B coverage truthfulness: real returned count only, never
             a hardcoded number, and never a full-exchange claim. */}
-        {data?.screened_from
-          ? ` · screened from ${data.screened_from.toLocaleString()} eligible ${market === "IN" ? "NSE" : "US"} stocks in the current quality-filtered universe`
-          : ""}
-      </p>
-      <p className="text-[11px] text-gray-500">
-        Coverage is a screened liquid-quality universe, not all {market === "IN" ? "NSE" : "US"}-listed stocks.
-      </p>
-      {/* DP-035/DP-036: surface the backend's own truthful conviction_semantic
-          caveat (not a hardcoded frontend claim) whenever the conviction-gated
-          policy is active. DP-035 found the win-rate correlation at this
-          threshold is not yet confirmed by a matching backtest for medium/long
-          horizon (thin sample). DP-036 ran a real, full-population backtest
-          (13,988 rows) against the correct gate field for SHORT horizon
-          specifically and found a definitive negative result — no meaningful
-          win-rate lift — so the backend now returns a stronger, distinguishable
-          "tested, no lift found" string for short horizon only; medium/long keep
-          DP-035's "not yet confirmed" wording unchanged. This component renders
-          whichever string the backend sends, per-horizon — no per-horizon
-          branching lives here. Absent entirely for a legacy/pre-policy payload
-          (publicationPolicy === null), same as the rest of this dynamic copy. */}
-      {publicationPolicy && (
-        <p className="text-[11px] text-gray-500">{publicationPolicy.semantic}</p>
+        <p className="text-[11px] text-gray-500">
+          Coverage is a screened liquid-quality universe, not all {market === "IN" ? "NSE" : "US"}-listed stocks
+          {data?.screened_from
+            ? ` — screened from ${data.screened_from.toLocaleString()} eligible ${market === "IN" ? "NSE" : "US"} stocks in the current quality-filtered universe`
+            : ""}.
+        </p>
+        {/* DP-035/DP-036: surface the backend's own truthful conviction_semantic
+            caveat (not a hardcoded frontend claim) whenever the conviction-gated
+            policy is active. DP-035 found the win-rate correlation at this
+            threshold is not yet confirmed by a matching backtest for medium/long
+            horizon (thin sample). DP-036 ran a real, full-population backtest
+            (13,988 rows) against the correct gate field for SHORT horizon
+            specifically and found a definitive negative result — no meaningful
+            win-rate lift — so the backend now returns a stronger, distinguishable
+            "tested, no lift found" string for short horizon only; medium/long keep
+            DP-035's "not yet confirmed" wording unchanged. This component renders
+            whichever string the backend sends, per-horizon — no per-horizon
+            branching lives here. Absent entirely for a legacy/pre-policy payload
+            (publicationPolicy === null), same as the rest of this dynamic copy. */}
+        {publicationPolicy && (
+          <p className="text-[11px] text-gray-500">{publicationPolicy.semantic}</p>
+        )}
+      </div>
       )}
       </div>
 
       {/* Market regime + alpha engine */}
-      {(data?.regime || alphaForHorizon) && (
+      {showDetails && (data?.regime || alphaForHorizon) && (
         <div className="bg-dark-card border border-dark-border rounded-xl px-4 py-3 flex flex-wrap items-center gap-3 text-xs">
           {data?.regime && (() => {
             const regimeColors: Record<string, string> = {
@@ -1544,7 +1570,7 @@ export default function DailyPicksPage() {
       )}
 
       {/* Global Macro */}
-      {(() => {
+      {showDetails && (() => {
         const allPicks = [...(data?.picks?.short ?? []), ...(data?.picks?.medium ?? []), ...(data?.picks?.long ?? [])];
         const ctx = (allPicks[0] as any)?.global_context as GlobalContext | undefined;
         if (!ctx?.levels && !ctx?.changes) return null;
@@ -1641,14 +1667,17 @@ export default function DailyPicksPage() {
         </>
       )}
 
-      {/* Historical accuracy — independent of the hold above, always shown
-          when data exists (see HistoricalTrackRecordSummary's own comment
-          for why this doesn't share GPI-0's defects). */}
-      <HistoricalTrackRecordSummary
-        horizon={horizon}
-        entries={data?.historical_track_record?.[horizon]}
-        benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"}
-      />
+      {/* Historical accuracy — independent of the hold above, shown
+          whenever data exists (see HistoricalTrackRecordSummary's own
+          comment for why this doesn't share GPI-0's defects); collapsed
+          behind showDetails per the quality-over-clutter simplification. */}
+      {showDetails && (
+        <HistoricalTrackRecordSummary
+          horizon={horizon}
+          entries={data?.historical_track_record?.[horizon]}
+          benchmarkLabel={market === "IN" ? "Nifty" : "S&P 500"}
+        />
+      )}
 
       {/* Loading */}
       {isLoading && (

@@ -24,3 +24,21 @@ body {
   from { width: 5%; }
   to   { width: 95%; }
 }
+
+/* Ticker ribbon — translates one full copy-width to the left, then the
+   duplicated second copy is already in position to continue seamlessly.
+   Duration is set per-instance via inline style (--ticker-duration) so it
+   scales with content length instead of a fixed speed looking rushed on
+   a short list or sluggish on a long one. */
+@keyframes ticker-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+.animate-ticker {
+  animation: ticker-scroll var(--ticker-duration, 30s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ticker { animation: none; }
+}

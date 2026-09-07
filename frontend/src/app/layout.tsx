@@ -7,9 +7,9 @@ import { TrendingUp } from "lucide-react";
 import { MobileNav } from "@/components/MobileNav";
 import { NavLinks } from "@/components/NavLinks";
 import { UserMenu } from "@/components/UserMenu";
-import { MarketStatusInline, MobileMarketStrip } from "@/components/MarketStatusBar";
+import { MarketStatusInline } from "@/components/MarketStatusBar";
 import { LiveClock } from "@/components/LiveClock";
-import { IndexBar } from "@/components/IndexBar";
+import { TickerRibbon } from "@/components/TickerRibbon";
 import { NavHeightObserver } from "@/components/NavHeightObserver";
 import { GlobalMarketDropdown } from "@/components/GlobalMarketDropdown";
 import { isTradePostmortemDailyEnabled } from "@/utils/featureFlags";
@@ -50,14 +50,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Providers>
           <NavHeightObserver />
           <nav id="site-nav" className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg sm:bg-dark-bg/90 backdrop-blur-none sm:backdrop-blur-md">
-            {/* Row 1: Logo · Search · Hamburger (mobile) / Clock + Market Status + Sign In (desktop).
-                flex-wrap (instead of squeezing the status block into a narrow
-                horizontal-scroll strip) lets it drop to its own full-width
-                line when it doesn't fit alongside Logo+Search — same clean
-                two-line layout (label row + "Opens/Closes at..." sub-row)
-                every market pill already uses, just without needing to
-                scroll to see all of it. */}
-            <div className="max-w-7xl mx-auto px-3 sm:px-4 pt-2.5 pb-2 flex items-center flex-wrap gap-2 sm:gap-4">
+            {/* Row 1: Logo · Search · (mobile market dropdown) · Sign In · Hamburger.
+                Kept deliberately lean — clock and market-open/closed status
+                used to live in this same row (desktop-only) with a SEPARATE
+                mobile-only strip below it, which left a real gap between the
+                `md` and `lg` breakpoints where NEITHER showed (confirmed:
+                nothing rendered at all from ~768–1023px wide). Moved to its
+                own always-visible Row 2 below instead of being split across
+                two conditionally-hidden blocks. */}
+            <div className="max-w-7xl mx-auto px-3 sm:px-4 pt-2.5 pb-2 flex items-center gap-2 sm:gap-4">
               {/* Logo */}
               <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base sm:text-lg shrink-0">
                 <TrendingUp size={20} />
@@ -65,17 +66,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </Link>
 
               {/* Search — fills remaining space */}
-              <div className="flex-1 min-w-0"><SearchBar /></div>
-
-              {/* Desktop: clock + market status — wraps to its own line, full width, if it doesn't fit on row 1 */}
-              <div className="hidden lg:flex items-start flex-wrap gap-4 shrink-0">
-                <LiveClock inline />
-                <span className="text-dark-border text-xs shrink-0">|</span>
-                <MarketStatusInline />
-              </div>
+              <div className="flex-1 min-w-0 sm:min-w-[220px] max-w-xs"><SearchBar /></div>
 
               {/* Global market context — mobile/tablet only here (below
-                  lg). Row 3 renders the single desktop (lg+) copy, after
+                  lg). Row 4 renders the single desktop (lg+) copy, after
                   the Paper Trade tab — without this `lg:hidden`, both would
                   render simultaneously on desktop. Both instances share the
                   same localStorage-backed hook and stay in sync live via a
@@ -96,32 +90,33 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
             </div>
 
-            {/* Row 2 (mobile): compact market status strip */}
-            <div className="md:hidden border-t border-dark-border/40 px-3 py-1.5 overflow-x-auto scrollbar-hide">
-              <MobileMarketStrip />
-            </div>
-
-            {/* Index strip — NIFTY/SENSEX, S&P/NASDAQ/DOW, Bitcoin. Persistent
-                across every page instead of being duplicated per-page, same
-                way MarketStatusInline shows all markets' hours regardless of
-                which one a given page has selected. */}
-            <div className="border-t border-dark-border/40 px-3 sm:px-4 py-1.5 overflow-x-auto scrollbar-hide">
-              {/* No width utility here — IndexBar's own `inline` wrapper is
-                  already w-max, and nesting two width-constrained flex
-                  containers breaks width calculation in some browsers,
-                  causing items to overlap instead of sitting side by side.
-                  Flex items size to their content by default, so this row
-                  doesn't need one of its own. */}
-              <div className="max-w-7xl mx-auto flex items-center gap-4">
-                <div className="shrink-0"><IndexBar market="IN" inline /></div>
-                <span className="text-dark-border text-xs shrink-0">|</span>
-                <div className="shrink-0"><IndexBar market="US" inline /></div>
-                <span className="text-dark-border text-xs shrink-0">|</span>
-                <div className="shrink-0"><IndexBar market="CRYPTO" inline /></div>
+            {/* Row 2: Clock + market open/closed status — ONE component,
+                always rendered at every viewport width (no `hidden`/breakpoint
+                split), so there is no width range where this information
+                disappears entirely. `flex-wrap` here needs the row to be
+                width-CONSTRAINED (not `overflow-x-auto`, which gives a flex
+                container license to grow past the viewport instead of
+                wrapping) — each market pill drops to its own line on a
+                narrow phone instead of two half-cut-off pills sitting
+                side by side. */}
+            <div className="border-t border-dark-border/40 px-3 sm:px-4 py-1.5">
+              <div className="max-w-7xl mx-auto flex items-start flex-wrap gap-x-4 gap-y-1.5">
+                <LiveClock inline />
+                <span className="hidden sm:inline text-dark-border text-xs shrink-0">|</span>
+                <MarketStatusInline />
               </div>
             </div>
 
-            {/* Row 3: Nav links (desktop only). Global market dropdown sits
+            {/* Row 3: live index ticker — NIFTY/SENSEX, S&P/NASDAQ/DOW,
+                Bitcoin. A continuously-scrolling marquee (TickerRibbon)
+                instead of a static horizontally-scrollable row, so every
+                index is visible in turn without the user needing to scroll
+                to see the ones off-screen. Persistent across every page. */}
+            <div className="border-t border-dark-border/40 py-1.5">
+              <TickerRibbon />
+            </div>
+
+            {/* Row 4: Nav links (desktop only). Global market dropdown sits
                 after the Paper Trade tab, separated by a vertical divider so
                 it doesn't read as one more nav link. */}
             <div className="hidden lg:block border-t border-dark-border/60">
