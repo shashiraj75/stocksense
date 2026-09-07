@@ -330,7 +330,7 @@ def test_us_catchup_itself_never_triggers_the_finalizer():
     import api.main as main_mod
     src = inspect.getsource(main_mod)
     catchup_start = src.index("async def _catchup_picks")
-    catchup_end = src.index("async def _catchup_validation")
+    catchup_end = src.index("async def _validation_missed_slot_check")
     catchup_body = src[catchup_start:catchup_end]
     assert "finalize_premarket" not in catchup_body
     assert "premarket_finalize" not in catchup_body

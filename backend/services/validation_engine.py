@@ -3999,6 +3999,26 @@ def has_established_schedule_baseline(horizon: str, universe: str, schedule_vers
     return row is not None
 
 
+def find_schedule_slot(horizon: str, universe: str, scheduled_slot: datetime,
+                        schedule_version: str = "v1") -> dict | None:
+    """Read-only — never mutates state, never creates a row (unlike
+    get_or_create_schedule_slot). Returns None if no slot has ever been
+    created for this exact identity. Used by the startup missed-slot
+    check (api/main.py) to determine whether this week's scheduled batch
+    was ever admitted, WITHOUT itself causing a slot to spring into
+    existence purely from being asked about — that side effect belongs
+    exclusively to admission (get_or_create_schedule_slot), never to a
+    passive status check."""
+    slot_iso = _iso(scheduled_slot)
+    return _fetchone_ledger(
+        f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots "
+        "WHERE horizon=%s AND universe=%s AND scheduled_slot=%s AND schedule_version=%s",
+        f"SELECT {_SLOT_COLUMNS} FROM validation_schedule_slots "
+        "WHERE horizon=? AND universe=? AND scheduled_slot=? AND schedule_version=?",
+        (horizon, universe, slot_iso, schedule_version),
+    )
+
+
 def get_validation_execution_lease() -> dict | None:
     """Read-only — never mutates state."""
     return _fetchone_ledger(

@@ -670,7 +670,7 @@ describe("PR #52 security/cadence invariants unchanged", () => {
   it("retains the daily/Sunday cadence wording", async () => {
     mockApi();
     renderPage();
-    await screen.findByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i);
+    await screen.findByText(/automated validation runs weekly on Saturdays at/i);
     await screen.findByText(/12:00 UTC \(16:00 Dubai\)/i);
   });
 
@@ -1341,7 +1341,7 @@ describe("V-FRESH1B — freshness disclosure", () => {
     mockApi({ results: { ...BASE_RESULTS, validation_evidence: FULL_EVIDENCE, freshness: UNKNOWN_FRESHNESS } });
     renderPage();
     await screen.findByTestId("freshness-disclosure");
-    await screen.findByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i);
+    await screen.findByText(/automated validation runs weekly on Saturdays at/i);
     await screen.findByText(/12:00 UTC \(16:00 Dubai\)/i);
   });
 
@@ -1414,7 +1414,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getByText(
-      /Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session\. Eligibility is evaluated daily at 03:30 IST\./i,
+      /Short-horizon results for this universe share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule as medium and long horizons — no separate daily schedule exists\./i,
     )).toBeInTheDocument();
   });
 
@@ -1425,7 +1425,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /Midcap/i }));
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getByText(
-      /Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session\. Eligibility is evaluated daily at 03:30 IST\./i,
+      /Short-horizon results for this universe share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule as medium and long horizons — no separate daily schedule exists\./i,
     )).toBeInTheDocument();
   });
 
@@ -1443,7 +1443,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     expect(screen.getAllByText(
       /No automatic validation schedule is currently defined for this horizon and universe\./i,
     ).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+    expect(screen.queryByText(/share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule/i))
       .not.toBeInTheDocument();
   });
 
@@ -1455,7 +1455,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getAllByText(/No automatic validation schedule is currently defined for this horizon and universe\./i).length)
       .toBeGreaterThan(0);
-    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+    expect(screen.queryByText(/share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule/i))
       .not.toBeInTheDocument();
   });
 
@@ -1489,8 +1489,19 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getByText(
-      /Short-horizon accuracy statistics are recomputed for each eligible completed session using overlapping 5-trading-day forward windows\. Consecutive runs therefore are not independent samples\./i,
+      /repeated backtests reuse most of the same historical observations each time, and overlapping outcome windows create statistical dependence between successive runs\. A weekly refresh does not make successive results independent samples\./i,
     )).toBeInTheDocument();
+  });
+
+  it("does not claim the weekly schedule change creates independent samples", async () => {
+    mockShortAware("nifty100", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    await screen.findByTestId("freshness-disclosure");
+    // The scheduling-cadence-change PR must not overclaim statistical
+    // independence merely because it moved the trigger to weekly.
+    expect(screen.queryByText(/scheduled runs are ordinarily about a week apart/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/consecutive runs therefore are not independent samples/i)).not.toBeInTheDocument();
   });
 
   it("medium does not display the overlapping-window disclosure", async () => {
@@ -1515,7 +1526,7 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
-    expect(screen.getByText(/medium- and long-horizon results are scheduled Weekly — Saturdays at/i)).toBeInTheDocument();
+    expect(screen.getByText(/automated validation runs weekly on Saturdays at/i)).toBeInTheDocument();
     expect(screen.getByText(/12:00 UTC \(16:00 Dubai\)/i)).toBeInTheDocument();
   });
 
@@ -1545,13 +1556,16 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /🇺🇸 US/i }));
     await screen.findByText(/No validation results yet for short horizon/i);
     expect(screen.queryByTestId("freshness-disclosure")).not.toBeInTheDocument();
-    expect(screen.queryByText(/scheduled automatically once per newly completed eligible exchange session/i))
+    expect(screen.queryByText(/share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule/i))
       .not.toBeInTheDocument();
   });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
 // 2026-09-06 (PR #85 corrective follow-up) — equity-scoped SELL disclosure
+// 2026-09-07: restored after an accidental PR #87 file-copy reversion
+// wiped this describe block along with the production banner it tests —
+// see the matching restoration note in page.tsx.
 // ─────────────────────────────────────────────────────────────────────────
 
 describe("equity SELL containment disclosure", () => {

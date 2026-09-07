@@ -584,8 +584,8 @@ export default function ValidationPage() {
           </div>
           <p className="text-sm text-gray-400">
             Historical accuracy of the AI model across {universeLabel}. Validation is recomputed
-            automatically — medium- and long-horizon results are scheduled Weekly — Saturdays at
-            12:00 UTC (16:00 Dubai).
+            automatically — automated validation runs weekly on Saturdays at 12:00 UTC (16:00
+            Dubai), for every currently enabled horizon and universe.
             {status?.schedule?.next_run_utc && (
               <>
                 {" "}Next scheduled run:{" "}
@@ -598,7 +598,7 @@ export default function ValidationPage() {
               <>
                 {" "}
                 {shortAutoScheduled
-                  ? "Short-horizon results for this universe are scheduled automatically once per newly completed eligible exchange session. Eligibility is evaluated daily at 03:30 IST."
+                  ? "Short-horizon results for this universe share the same weekly Saturday 12:00 UTC (16:00 Dubai) automatic schedule as medium and long horizons — no separate daily schedule exists."
                   : "No automatic validation schedule is currently defined for this horizon and universe."}
               </>
             )}
@@ -626,7 +626,12 @@ export default function ValidationPage() {
           HOLD because equity SELL publication itself is switched off,
           not because the model changed its read of the stock — see the
           "Suppressed SELL" note on the affected stock's own page for the
-          per-stock version of this same distinction. */}
+          per-stock version of this same distinction.
+          2026-09-07 (PR #87 corrective review): this entire banner was
+          accidentally deleted by PR #87 when an unrelated file-copy
+          mistake overwrote this file with a stale, pre-PR-#85 checkout —
+          restored verbatim here, unrelated to the weekly-schedule work
+          this PR is actually about. */}
       <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-4 flex items-start gap-3">
         <AlertCircle size={18} className="text-orange-400 mt-0.5 shrink-0" />
         <div className="text-sm text-orange-300/80">
@@ -657,13 +662,22 @@ export default function ValidationPage() {
         </div>
       </div>
 
-      {/* V-SCHED1C2D — statistical-independence disclosure specific to Short:
-          a 5-trading-day forward window recomputed once per newly completed
-          session means consecutive short-horizon runs' evaluation windows
-          overlap substantially. Adjacent to the walk-forward guarantee above,
-          medium/long only (their 21/63-day windows and daily/weekly cadence
-          don't share this same overlap concern in the same way). Describes
-          the dependence honestly — does not claim it invalidates the results. */}
+      {/* V-SCHED1C2D — statistical-independence disclosure specific to Short.
+          2026-09-07 PR #87 CORRECTIVE REVIEW: the previous wording here
+          conflated two separate things — how OFTEN a new run is
+          triggered (schedule cadence) vs. what historical observations
+          and forward-return windows each individual run actually
+          evaluates (methodology). Verified directly against
+          services/validation_engine.py: a single run_validation() call
+          walks forward over that horizon's ENTIRE HORIZON_PERIOD (short:
+          3 years of history, stepped every HORIZON_STEP=5 trading days)
+          — not just "the latest session." Moving the TRIGGER from daily
+          to weekly does not change that each run still re-evaluates
+          almost the same multi-year span of overlapping 5-day forward
+          windows as the run before it; only a small slice at the edge is
+          genuinely new. A weekly refresh is therefore NOT a claim of
+          improved statistical independence between successive results —
+          stated honestly below, not implied by the schedule change. */}
       {horizon === "short" && (
         <div
           data-testid="short-overlapping-window-disclosure"
@@ -671,9 +685,11 @@ export default function ValidationPage() {
         >
           <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
           <div className="text-sm text-yellow-300/80">
-            Short-horizon accuracy statistics are recomputed for each eligible completed session
-            using overlapping 5-trading-day forward windows. Consecutive runs therefore are not
-            independent samples.
+            Automated validation runs weekly. Short-horizon accuracy statistics use overlapping
+            5-trading-day forward windows over multiple years of history — repeated backtests reuse
+            most of the same historical observations each time, and overlapping outcome windows
+            create statistical dependence between successive runs. A weekly refresh does not make
+            successive results independent samples.
           </div>
         </div>
       )}
@@ -1000,7 +1016,9 @@ export default function ValidationPage() {
               // purposes — it is NOT a currently published or
               // currently actionable equity recommendation. Crypto is
               // unaffected. See DAILY-PICKS-IMPLEMENTATION-REGISTER.md
-              // for the full evidence.
+              // for the full evidence. Restored 2026-09-07 after an
+              // accidental PR #87 file-copy reversion (see the equity
+              // SELL banner comment above for the full incident note).
               sub="% of SELL-classified backtest signals that underperformed — equity research only, not a live recommendation"
               color={
                 (res.sell_hit_rate_pct ?? 0) >= 53 ? "text-green-400" :

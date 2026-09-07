@@ -305,10 +305,19 @@ class TestConcurrencyProtectionUnchangedByAuth:
 class TestInternalSchedulerUnaffected:
 
     def test_scheduler_loop_calls_run_validation_directly_not_via_http(self):
+        """2026-09 WEEKLY-ONLY POLICY: the scheduler calls
+        execute_admitted_validation() (the V-SCHED1C1 admission wrapper
+        around run_validation), not the bare function — this assertion
+        is corrected to check for the actual current call site rather
+        than a bare "run_validation(" substring that, before this
+        correction, only matched by accident via unrelated docstring
+        prose describing a historical defect. The real property this
+        test protects — no internal scheduler call goes through the
+        authenticated HTTP route — is unchanged and still verified below."""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
-        assert "run_validation(" in src
+        assert "execute_admitted_validation(" in src
         assert "/api/validation/run" not in src
         assert "trigger_validation" not in src
         assert "X-Secret" not in src
@@ -330,14 +339,21 @@ class TestInternalSchedulerUnaffected:
         assert "trigger_validation" not in src
         assert "X-Secret" not in src
         assert "_VALIDATION_RUN_SECRET" not in src
-        # Sanity: both internal triggers ARE present and, since V-SCHED1C1,
-        # go through the shared ledger-admission path (execute_admitted_
-        # validation) rather than calling run_validation() directly or the
-        # HTTP route — proving this isn't a false pass from a stripped-down
-        # file, and that no separate admission logic was hand-rolled here.
+        # Sanity: the internal trigger and the read-only missed-slot check
+        # ARE present, and the trigger goes through the shared
+        # ledger-admission path (execute_admitted_validation) rather than
+        # calling run_validation() directly or the HTTP route — proving
+        # this isn't a false pass from a stripped-down file. 2026-09
+        # WEEKLY-ONLY POLICY: _catchup_validation (which USED to execute
+        # a catch-up run) is removed; _validation_missed_slot_check is
+        # its read-only replacement and never calls execute_admitted_
+        # validation at all — so only ONE call site remains module-wide,
+        # inside _validation_schedule_loop itself.
         assert "_validation_schedule_loop" in src
-        assert "_catchup_validation" in src
-        assert src.count("execute_admitted_validation(") >= 3  # scheduler medium block, long block, catch-up
+        assert "async def _validation_missed_slot_check():" in src
+        assert "async def _catchup_validation():" not in src
+        assert not hasattr(main_module, "_catchup_validation")
+        assert src.count("execute_admitted_validation(\n") == 1  # the single weekly scheduler call site
 
     def test_run_validation_itself_has_no_new_auth_requirement(self):
         # The core function the scheduler calls must remain callable with
