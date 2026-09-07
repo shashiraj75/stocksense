@@ -24,37 +24,12 @@ function useMarketStatuses() {
   return statuses;
 }
 
-/** Compact strip for mobile — scrollable single row */
-export function MobileMarketStrip() {
-  const statuses = useMarketStatuses();
-  if (!statuses) return null;
-  return (
-    <div className="flex items-center gap-4 w-max">
-      {statuses.map(({ key, flag, label, status }) => (
-        <div key={key} className="flex items-center gap-1 shrink-0">
-          <span className="text-xs leading-none">{flag}</span>
-          <span className="text-[11px] text-gray-300">{label}</span>
-          <span className={clsx("w-1.5 h-1.5 rounded-full shrink-0",
-            status.isOpen ? "bg-green-500" : "bg-red-500"
-          )} />
-          <span className={clsx("text-[11px] font-semibold", status.isOpen ? "text-green-400" : "text-red-400")}>
-            {status.isOpen ? "Open" : "Closed"}
-          </span>
-          {status.nextEventLabel && (
-            <span className="text-[11px] text-gray-300 ml-0.5">{status.nextEventLabel}</span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /** Inline version — sits inside the top navbar row */
 export function MarketStatusInline() {
   const statuses = useMarketStatuses();
   if (!statuses) return null;
   return (
-    <div className="flex items-center gap-4">
+    <div className="flex items-center flex-wrap gap-x-4 gap-y-1">
       {statuses.map(({ key, label, flag, status }) => (
         <div key={key} className="flex flex-col shrink-0">
           <div className="flex items-center gap-1.5">
