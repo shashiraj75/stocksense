@@ -281,6 +281,21 @@ from services.market_calendar import parse_auto_short_universes as _parse_auto_s
 SHORT_WEEKLY_SCHEDULE_VERSION = "v2-weekly-short"
 MEDIUM_LONG_SCHEDULE_VERSION = "v1"
 
+# 2026-09-07 PR #87 timing correction — how late a scheduler wake-up may
+# be before a weekly batch is still allowed to START (see
+# _validation_schedule_loop's own "Batch-start window" docstring section
+# for the full policy this constant governs). Five minutes: matches this
+# same function's own pre-existing 5-minute inter-combination gap — the
+# smallest timing granularity already established elsewhere in this exact
+# scheduler — and is comfortably larger than realistic asyncio/event-loop
+# jitter (GC pauses, brief system load) while remaining comfortably
+# smaller than the weekly cadence itself, so a genuinely stuck/suspended
+# process is still correctly treated as having missed the slot rather
+# than silently absorbed into "jitter". No other repository policy
+# specifies a different value for this scheduler.
+from datetime import timedelta as _timedelta
+BATCH_START_GRACE = _timedelta(minutes=5)
+
 
 def enabled_validation_combinations() -> list[tuple[str, str, str]]:
     """The complete set of (horizon, universe, schedule_version) triples
@@ -398,27 +413,64 @@ async def _validation_schedule_loop():
     hours past the nominal 12:00 UTC instant — this is expected and
     matches the existing medium/long behavior, not a new risk.
 
+    Batch-start window (2026-09-07 PR #87 timing correction): a stable
+    slot IDENTITY (the point above) is not, by itself, a bound on WHEN a
+    batch may start — an arbitrarily delayed wake-up (laptop/container
+    suspend, a long GC pause, a starved event loop) could otherwise still
+    admit a full weekly batch hours or days after the intended Saturday
+    12:00 UTC instant, under that instant's own identity. To close this,
+    after `await asyncio.sleep(sleep_secs)` returns, the ACTUAL UTC time
+    is re-read and compared against `next_run`:
+      - if still early (sleep woke up before the target — not expected
+        from asyncio.sleep's own lower-bound contract, but handled
+        defensively rather than assumed impossible): sleep the remaining
+        difference and re-check, never admitting early;
+      - if within BATCH_START_GRACE (5 minutes — see the constant's own
+        docstring for why) of `next_run`: begin the batch, using
+        `next_run` as `slot_instant`, exactly as before;
+      - if beyond BATCH_START_GRACE: the slot is treated as MISSED for
+        this process — logged (mirroring `_validation_missed_slot_check`'s
+        own wording and policy), and the loop returns to computing the
+        NEXT future Saturday. No off-schedule catch-up batch is started —
+        this preserves the existing no-startup-backfill policy exactly,
+        just applied to a scheduler that itself woke up too late, not
+        only to a freshly-started process.
+    This start-window check applies ONLY to the decision of whether to
+    BEGIN a batch. Once a batch has begun, it is unaffected: sequential
+    combinations keep the exact same `slot_instant` identity and may
+    continue past the grace window, past Saturday, or into the following
+    days — the paragraph above ("Timing contract") is unchanged. Per-
+    attempt deadlines (`MAX_RUN_DURATION_SECONDS`), the global lease,
+    fencing, and atomic persistence are all completely untouched by this
+    correction — "a batch may continue" was never a claim that individual
+    attempts are unbounded, and remains exactly as bounded as before.
+
     Ordinary wake-up jitter (2026-09-07 PR #87 corrective review): if the
     event loop resumes late from `await asyncio.sleep(sleep_secs)` — a GC
     pause, system load, or simply an imprecise timer — this does NOT
-    create off-schedule execution or a rejected/duplicate batch. `next_run`
-    is computed ONCE per while-loop iteration, BEFORE sleeping, and reused
+    create off-schedule execution or a rejected/duplicate batch, AS LONG
+    AS the lateness is within BATCH_START_GRACE (see above; beyond that,
+    it is correctly treated as missed, not started). `next_run` is
+    computed ONCE per while-loop iteration, BEFORE sleeping, and reused
     as `slot_instant` for every combination admitted in that same pass —
-    a late wake-up just means the (still-correctly-identified) batch
-    starts a little later, using the exact same scheduled_slot identity
-    it always would have. There is no wall-clock equality check anywhere
-    in the admission path (`get_or_create_schedule_slot`/
-    `admit_validation_attempt`) that a late wake-up could ever fail — slot
-    identity is a fixed value, not a live timestamp comparison. This is
-    entirely separate from — and must not be confused with —
+    jitter within the grace window just means the (still-correctly-
+    identified) batch starts a little later, using the exact same
+    scheduled_slot identity it always would have. There is no wall-clock
+    EQUALITY check anywhere in the admission path
+    (`get_or_create_schedule_slot`/`admit_validation_attempt`) that a
+    late-but-within-grace wake-up could ever fail — slot identity is a
+    fixed value, not a live timestamp comparison. This is entirely
+    separate from — and must not be confused with —
     `_validation_missed_slot_check`'s explicit ZERO tolerance for
-    executing a slot that was already missed by the time THIS PROCESS
-    started: that policy governs whether a new process launches an
-    unscheduled backfill for a slot an earlier process (or this one, on a
-    prior day) never got to: it does not, and never will, execute one —
-    only log it. It says nothing about, and does not restrict, how late a
-    single already-running scheduler's own sleep may wake up before
-    proceeding with its own already-decided batch.
+    EXECUTING a slot that was already missed by the time a NEW PROCESS
+    started: that policy governs whether a freshly-started process
+    launches an unscheduled backfill for a slot an earlier process (or
+    this one, on a prior day) never got to — it does not, and never
+    will, execute one, only log it. The batch-start grace window above is
+    a distinct, narrower mechanism: it governs whether THIS SAME
+    already-running scheduler's own delayed wake-up may still begin the
+    batch it was already about to start, not whether a different process
+    may retroactively start one later.
     """
     from datetime import datetime, timezone, timedelta
     import uuid
@@ -441,6 +493,32 @@ async def _validation_schedule_loop():
             )
             await asyncio.sleep(sleep_secs)
 
+            # Re-read the actual UTC time — asyncio.sleep only guarantees
+            # NOT waking before sleep_secs elapses, never that it wakes
+            # promptly at that instant. A spurious/early wake (defensive —
+            # not expected in practice) sleeps the remainder and re-checks;
+            # a wake beyond BATCH_START_GRACE is treated as a missed slot,
+            # not backfilled.
+            while True:
+                wake_now = datetime.now(timezone.utc)
+                lateness = wake_now - next_run
+                if lateness < timedelta(0):
+                    # Woke early — sleep the remainder and check again.
+                    await asyncio.sleep((-lateness).total_seconds())
+                    continue
+                break
+
+            if lateness > BATCH_START_GRACE:
+                subsequent_next_run = next_saturday_1200_utc(wake_now)
+                log.warning(
+                    f"[validation_scheduler] missed the batch-start window for "
+                    f"{next_run.isoformat()} — woke up {lateness.total_seconds()/60:.1f} min late "
+                    f"(grace={BATCH_START_GRACE.total_seconds()/60:.0f} min); recording as missed, "
+                    f"no off-schedule catch-up batch will be started. Next scheduled slot: "
+                    f"{subsequent_next_run.isoformat()}."
+                )
+                continue  # back to top of while True — waits for the NEXT future Saturday
+
             # All currently-enabled combinations share the single weekly
             # slot, staggered by 5 min between every horizon/universe pair
             # so nothing runs concurrently on the same admission owner —
@@ -448,7 +526,7 @@ async def _validation_schedule_loop():
             # machinery in execute_admitted_validation(), not reimplemented.
             from services.validation_engine import execute_admitted_validation
             loop = asyncio.get_event_loop()
-            slot_instant = next_run  # already UTC-aware
+            slot_instant = next_run  # already UTC-aware — fixed once the batch has started; unaffected by anything past this point
             for horizon, univ, sched_version in enabled_validation_combinations():
                 try:
                     log.info(f"[validation_scheduler] starting {horizon}/{univ} run…")
