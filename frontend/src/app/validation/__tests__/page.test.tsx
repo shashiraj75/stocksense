@@ -1489,8 +1489,19 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
     await screen.findByTestId("freshness-disclosure");
     expect(screen.getByText(
-      /Short-horizon accuracy statistics use a 5-trading-day forward window and are recomputed on the same weekly Saturday schedule as medium and long horizons — scheduled runs are ordinarily about a week apart\./i,
+      /repeated backtests reuse most of the same historical observations each time, and overlapping outcome windows create statistical dependence between successive runs\. A weekly refresh does not make successive results independent samples\./i,
     )).toBeInTheDocument();
+  });
+
+  it("does not claim the weekly schedule change creates independent samples", async () => {
+    mockShortAware("nifty100", SHORT_ENABLED_FRESHNESS);
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /^Short/i }));
+    await screen.findByTestId("freshness-disclosure");
+    // The scheduling-cadence-change PR must not overclaim statistical
+    // independence merely because it moved the trigger to weekly.
+    expect(screen.queryByText(/scheduled runs are ordinarily about a week apart/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/consecutive runs therefore are not independent samples/i)).not.toBeInTheDocument();
   });
 
   it("medium does not display the overlapping-window disclosure", async () => {
@@ -1547,5 +1558,45 @@ describe("V-SCHED1C2D — automatic short cadence and disclosure wording", () =>
     expect(screen.queryByTestId("freshness-disclosure")).not.toBeInTheDocument();
     expect(screen.queryByText(/share the same weekly Saturday 12:00 UTC \(16:00 Dubai\) automatic schedule/i))
       .not.toBeInTheDocument();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// 2026-09-06 (PR #85 corrective follow-up) — equity-scoped SELL disclosure
+// 2026-09-07: restored after an accidental PR #87 file-copy reversion
+// wiped this describe block along with the production banner it tests —
+// see the matching restoration note in page.tsx.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe("equity SELL containment disclosure", () => {
+  it("scopes the disabled-SELL banner to equities, not the whole product", async () => {
+    mockApi();
+    renderPage();
+    await screen.findByText(/Equity SELL recommendations are currently disabled/i);
+    // The prior wording made an UNQUALIFIED "anywhere in the product"
+    // claim, false since crypto uses an independent model. The banner
+    // heading itself must be equity-scoped, not a bare "SELL
+    // recommendations are currently disabled" with no market qualifier.
+    expect(screen.queryByText(/^SELL recommendations are currently disabled\.$/)).not.toBeInTheDocument();
+    // The corrected banner must explicitly state crypto is unaffected.
+    await screen.findByText(/crypto recommendations use a separate, independent model and are unaffected/i);
+  });
+
+  it("does not claim SELL evidence is solely a record of past backtests", async () => {
+    mockApi();
+    renderPage();
+    await screen.findByText(/Equity SELL recommendations are currently disabled/i);
+    // "past backtests" (implying validation no longer computes SELL) must
+    // not appear; the corrected wording says validation continues to
+    // compute SELL classifications for research purposes.
+    expect(screen.queryByText(/from past backtests/i)).not.toBeInTheDocument();
+    await screen.findByText(/validation continues to compute SELL classifications for research purposes/i);
+  });
+
+  it("relabels the SELL Hit Rate stat as equity research, not a live capability", async () => {
+    mockApi({ results: { ...BASE_RESULTS, sell_hit_rate_pct: 44.4 } });
+    renderPage();
+    await screen.findByText(/Equity SELL Hit Rate \(Research\)/i);
+    expect(screen.queryByText(/^SELL Hit Rate$/)).not.toBeInTheDocument();
   });
 });

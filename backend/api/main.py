@@ -260,25 +260,50 @@ async def _price_alerts_check_loop():
 from services.market_calendar import parse_auto_short_universes as _parse_auto_short_universes  # noqa: E402
 
 
-def enabled_validation_combinations() -> list[tuple[str, str]]:
-    """The complete set of (horizon, universe) combinations the single
-    weekly Saturday 12:00 UTC batch currently admits.
+# 2026-09-07 PR #87 corrective review: short's PRE-EXISTING ledger rows
+# (from the now-removed daily _short_validation_schedule_loop /
+# _short_catchup_validation) were created with schedule_version="v1" but
+# scheduled_slot = a daily exchange-session close time — NOT aligned to
+# Saturday 12:00 UTC at all. If short's weekly identity reused "v1", a
+# system already running the old daily short schedule would have
+# has_established_schedule_baseline(horizon="short", ..., "v1") return
+# True from those old daily rows on the very first deploy of this PR —
+# incorrectly treating "the new weekly identity has never run yet" as "a
+# weekly run was genuinely missed", producing a false missed-run report
+# on day one. A distinct schedule_version for short's NEW weekly identity
+# avoids this entirely: has_established_schedule_baseline correctly
+# returns False until the first REAL weekly tick creates a row under
+# THIS version, so the bootstrap-safety guard (identical in spirit to
+# medium/long's own) applies correctly to the transition itself, not just
+# to a brand-new deployment. Medium/long were already Saturday-aligned
+# under "v1" before this PR — they keep it unchanged; only short's
+# identity actually changed shape.
+SHORT_WEEKLY_SCHEDULE_VERSION = "v2-weekly-short"
+MEDIUM_LONG_SCHEDULE_VERSION = "v1"
+
+
+def enabled_validation_combinations() -> list[tuple[str, str, str]]:
+    """The complete set of (horizon, universe, schedule_version) triples
+    the single weekly Saturday 12:00 UTC batch currently admits.
 
     2026-09 WEEKLY-ONLY POLICY (SES-006-governed, explicit user approval):
     short, medium AND long horizons now share the exact same weekly slot
-    — this replaces the former independent daily short-horizon schedule
-    (03:30 IST) entirely. Medium/long remain unconditionally enabled for
-    all three universes (unchanged from before). Short is included ONLY
-    for whichever universes VALIDATION_AUTO_SHORT_UNIVERSES currently
-    enables — re-read from the environment on every call (never cached),
-    so an ordinary redeploy/config change can enable or disable it
-    without a code change, exactly as the old short scheduler did. This
-    is the SINGLE place that decides "what does an admitted weekly batch
-    contain" — the live scheduler and the startup missed-slot check both
-    call this, never duplicating the enabled-universe logic."""
+    INSTANT — this replaces the former independent daily short-horizon
+    schedule (03:30 IST) entirely. Medium/long remain unconditionally
+    enabled for all three universes (unchanged from before), under their
+    existing "v1" identity. Short is included ONLY for whichever
+    universes VALIDATION_AUTO_SHORT_UNIVERSES currently enables — re-read
+    from the environment on every call (never cached), so an ordinary
+    redeploy/config change can enable or disable it without a code
+    change, exactly as the old short scheduler did — but now under
+    SHORT_WEEKLY_SCHEDULE_VERSION, a distinct identity from its old daily
+    rows (see the module-level comment above). This is the SINGLE place
+    that decides "what does an admitted weekly batch contain" — the live
+    scheduler and the startup missed-slot check both call this, never
+    duplicating the enabled-universe logic."""
     enabled_short = _parse_auto_short_universes(os.getenv("VALIDATION_AUTO_SHORT_UNIVERSES"))
-    combos: list[tuple[str, str]] = [("short", u) for u in enabled_short]
-    combos += [(h, u) for h in ("medium", "long") for u in ("nifty100", "midcap", "us")]
+    combos: list[tuple[str, str, str]] = [("short", u, SHORT_WEEKLY_SCHEDULE_VERSION) for u in enabled_short]
+    combos += [(h, u, MEDIUM_LONG_SCHEDULE_VERSION) for h in ("medium", "long") for u in ("nifty100", "midcap", "us")]
     return combos
 
 
@@ -306,14 +331,18 @@ def compute_missed_validation_combinations(now_utc):
         return [], None, next_slot
 
     missed: list[str] = []
-    for horizon, univ in enabled_validation_combinations():
+    for horizon, univ, sched_version in enabled_validation_combinations():
         # V-SCHED1C1-ROLLOUT1 bootstrap safety, generalized: the very
-        # first deployment of a given (horizon, universe) combination —
-        # before its first-ever weekly tick has even happened — must
-        # never be reported as "missed".
-        if not has_established_schedule_baseline(horizon=horizon, universe=univ, schedule_version="v1"):
+        # first deployment of a given (horizon, universe, schedule_version)
+        # identity — before its first-ever weekly tick has even happened —
+        # must never be reported as "missed". Short's distinct
+        # SHORT_WEEKLY_SCHEDULE_VERSION means its OLD daily-session rows
+        # (schedule_version="v1") can never satisfy this check and
+        # therefore can never suppress a genuine future missed-run report
+        # under the new identity, nor falsely trigger one on day one.
+        if not has_established_schedule_baseline(horizon=horizon, universe=univ, schedule_version=sched_version):
             continue
-        slot = find_schedule_slot(horizon=horizon, universe=univ, scheduled_slot=this_weeks_slot, schedule_version="v1")
+        slot = find_schedule_slot(horizon=horizon, universe=univ, scheduled_slot=this_weeks_slot, schedule_version=sched_version)
         if slot is None or slot["status"] == "due":
             missed.append(f"{horizon}/{univ}")
     return missed, this_weeks_slot, next_slot
@@ -368,6 +397,28 @@ async def _validation_schedule_loop():
     3 short + 6 medium/long = 9 combinations can therefore continue for
     hours past the nominal 12:00 UTC instant — this is expected and
     matches the existing medium/long behavior, not a new risk.
+
+    Ordinary wake-up jitter (2026-09-07 PR #87 corrective review): if the
+    event loop resumes late from `await asyncio.sleep(sleep_secs)` — a GC
+    pause, system load, or simply an imprecise timer — this does NOT
+    create off-schedule execution or a rejected/duplicate batch. `next_run`
+    is computed ONCE per while-loop iteration, BEFORE sleeping, and reused
+    as `slot_instant` for every combination admitted in that same pass —
+    a late wake-up just means the (still-correctly-identified) batch
+    starts a little later, using the exact same scheduled_slot identity
+    it always would have. There is no wall-clock equality check anywhere
+    in the admission path (`get_or_create_schedule_slot`/
+    `admit_validation_attempt`) that a late wake-up could ever fail — slot
+    identity is a fixed value, not a live timestamp comparison. This is
+    entirely separate from — and must not be confused with —
+    `_validation_missed_slot_check`'s explicit ZERO tolerance for
+    executing a slot that was already missed by the time THIS PROCESS
+    started: that policy governs whether a new process launches an
+    unscheduled backfill for a slot an earlier process (or this one, on a
+    prior day) never got to: it does not, and never will, execute one —
+    only log it. It says nothing about, and does not restrict, how late a
+    single already-running scheduler's own sleep may wake up before
+    proceeding with its own already-decided batch.
     """
     from datetime import datetime, timezone, timedelta
     import uuid
@@ -398,14 +449,14 @@ async def _validation_schedule_loop():
             from services.validation_engine import execute_admitted_validation
             loop = asyncio.get_event_loop()
             slot_instant = next_run  # already UTC-aware
-            for horizon, univ in enabled_validation_combinations():
+            for horizon, univ, sched_version in enabled_validation_combinations():
                 try:
                     log.info(f"[validation_scheduler] starting {horizon}/{univ} run…")
                     result = await loop.run_in_executor(
                         None,
-                        lambda h=horizon, u=univ: execute_admitted_validation(
+                        lambda h=horizon, u=univ, sv=sched_version: execute_admitted_validation(
                             horizon=h, universe=u, trigger_type="scheduler", owner=owner,
-                            scheduled_slot=slot_instant, schedule_version="v1",
+                            scheduled_slot=slot_instant, schedule_version=sv,
                         ),
                     )
                     if result.get("ok"):

@@ -606,6 +606,48 @@ export default function ValidationPage() {
         </div>
       </div>
 
+      {/* 2026-09-06 (PR #85 corrective follow-up): scoped to EQUITY
+          explicitly — the original wording said "anywhere in the
+          product," which was false: crypto recommendations use a fully
+          independent model and are NOT affected by this containment
+          (see services/crypto_engine.py; verified no shared presentation
+          surface with this page). Also corrected: validation continues
+          to COMPUTE new SELL classifications going forward (this is
+          ongoing research, not solely a record of past backtests), and
+          the "backwards" finding is stated as this codebase's own
+          backtest evidence rather than as independently, externally
+          established fact — consistent with the outstanding research
+          limitations already documented elsewhere in this codebase
+          (see DAILY-PICKS-IMPLEMENTATION-REGISTER.md's corrective-review
+          entries on prior overclaiming in adjacent research). A
+          disabled EQUITY SELL recommendation is distinct from an
+          affirmative HOLD call: HOLD means the model actively read the
+          setup as range-bound/neutral; a would-be SELL setup is shown as
+          HOLD because equity SELL publication itself is switched off,
+          not because the model changed its read of the stock — see the
+          "Suppressed SELL" note on the affected stock's own page for the
+          per-stock version of this same distinction.
+          2026-09-07 (PR #87 corrective review): this entire banner was
+          accidentally deleted by PR #87 when an unrelated file-copy
+          mistake overwrote this file with a stale, pre-PR-#85 checkout —
+          restored verbatim here, unrelated to the weekly-schedule work
+          this PR is actually about. */}
+      <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-4 flex items-start gap-3">
+        <AlertCircle size={18} className="text-orange-400 mt-0.5 shrink-0" />
+        <div className="text-sm text-orange-300/80">
+          <strong className="text-orange-300">Equity SELL recommendations are currently disabled.</strong>{" "}
+          This codebase's own backtest evidence indicated SELL calls performed backwards at several equity
+          horizons (stocks flagged SELL tended to subsequently beat the benchmark, rather than underperform
+          it). Every SELL-related figure below reflects historical AND ongoing{" "}
+          <strong>research/backtest evidence</strong> — validation continues to compute SELL classifications
+          for research purposes, but SELL is not published as an actionable live equity recommendation
+          anywhere in the product. A setup that would previously have been called SELL is now shown as HOLD
+          on the equity stock page; that reflects containment, not an affirmative "hold this position" read.
+          This containment applies to <strong>equities only</strong> — crypto recommendations use a separate,
+          independent model and are unaffected.
+        </div>
+      </div>
+
       {/* Warning banner */}
       <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4 flex items-start gap-3">
         <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
@@ -621,15 +663,21 @@ export default function ValidationPage() {
       </div>
 
       {/* V-SCHED1C2D — statistical-independence disclosure specific to Short.
-          2026-09 WEEKLY-ONLY POLICY: short no longer runs on its own daily
-          schedule — it now shares the exact same weekly Saturday 12:00 UTC
-          slot as medium/long, so consecutive SCHEDULED runs are ordinarily
-          about a week apart, not one day apart. This substantially reduces
-          (though a manually-triggered run could still narrow it) the
-          window overlap the original daily-cadence disclosure described —
-          the wording below reflects that honestly rather than repeating
-          the stronger daily-cadence claim, without asserting a stronger
-          independence guarantee than has actually been verified. */}
+          2026-09-07 PR #87 CORRECTIVE REVIEW: the previous wording here
+          conflated two separate things — how OFTEN a new run is
+          triggered (schedule cadence) vs. what historical observations
+          and forward-return windows each individual run actually
+          evaluates (methodology). Verified directly against
+          services/validation_engine.py: a single run_validation() call
+          walks forward over that horizon's ENTIRE HORIZON_PERIOD (short:
+          3 years of history, stepped every HORIZON_STEP=5 trading days)
+          — not just "the latest session." Moving the TRIGGER from daily
+          to weekly does not change that each run still re-evaluates
+          almost the same multi-year span of overlapping 5-day forward
+          windows as the run before it; only a small slice at the edge is
+          genuinely new. A weekly refresh is therefore NOT a claim of
+          improved statistical independence between successive results —
+          stated honestly below, not implied by the schedule change. */}
       {horizon === "short" && (
         <div
           data-testid="short-overlapping-window-disclosure"
@@ -637,10 +685,11 @@ export default function ValidationPage() {
         >
           <AlertCircle size={18} className="text-yellow-400 mt-0.5 shrink-0" />
           <div className="text-sm text-yellow-300/80">
-            Short-horizon accuracy statistics use a 5-trading-day forward window and are recomputed
-            on the same weekly Saturday schedule as medium and long horizons — scheduled runs are
-            ordinarily about a week apart. A manually-triggered run outside that schedule could
-            still narrow or overlap with the most recent scheduled window.
+            Automated validation runs weekly. Short-horizon accuracy statistics use overlapping
+            5-trading-day forward windows over multiple years of history — repeated backtests reuse
+            most of the same historical observations each time, and overlapping outcome windows
+            create statistical dependence between successive runs. A weekly refresh does not make
+            successive results independent samples.
           </div>
         </div>
       )}
@@ -956,9 +1005,21 @@ export default function ValidationPage() {
               color={(res.profitable_buy_pct ?? 0) >= 55 ? "text-green-400" : "text-yellow-400"}
             />
             <StatCard
-              label="SELL Hit Rate"
+              label="Equity SELL Hit Rate (Research)"
               value={res.sell_hit_rate_pct != null ? `${res.sell_hit_rate_pct}%` : null}
-              sub="% of SELL calls that underperformed"
+              // 2026-09-06 (PR #85 corrective follow-up): live EQUITY
+              // SELL publication is disabled pending methodology review
+              // (this codebase's own backtest evidence indicated SELL
+              // calls performed backwards at several horizons). This
+              // figure reflects ongoing research/backtest computation —
+              // validation continues to classify SELL for research
+              // purposes — it is NOT a currently published or
+              // currently actionable equity recommendation. Crypto is
+              // unaffected. See DAILY-PICKS-IMPLEMENTATION-REGISTER.md
+              // for the full evidence. Restored 2026-09-07 after an
+              // accidental PR #87 file-copy reversion (see the equity
+              // SELL banner comment above for the full incident note).
+              sub="% of SELL-classified backtest signals that underperformed — equity research only, not a live recommendation"
               color={
                 (res.sell_hit_rate_pct ?? 0) >= 53 ? "text-green-400" :
                 (res.sell_hit_rate_pct ?? 0) >= 45 ? "text-yellow-400" : "text-red-400"

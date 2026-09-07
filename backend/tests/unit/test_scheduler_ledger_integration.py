@@ -343,7 +343,7 @@ class TestShortRemainsInactive:
         import api.main as main_module
         monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
         combos = main_module.enabled_validation_combinations()
-        assert all(h != "short" for h, _u in combos)
+        assert all(h != "short" for h, _u, _sv in combos)
         # medium/long for all 3 universes must still be present regardless.
         assert len(combos) == 6
 
@@ -351,9 +351,25 @@ class TestShortRemainsInactive:
         import api.main as main_module
         monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100,us")
         combos = main_module.enabled_validation_combinations()
-        short_combos = [u for h, u in combos if h == "short"]
+        short_combos = [u for h, u, _sv in combos if h == "short"]
         assert short_combos == ["nifty100", "us"]  # canonical order preserved
         assert len(combos) == 8  # 2 short + 6 medium/long
+
+    def test_short_uses_a_distinct_schedule_version_from_medium_long(self, monkeypatch):
+        """2026-09-07 PR #87 corrective review: short's old daily-session
+        ledger rows used schedule_version="v1" with a non-Saturday-aligned
+        scheduled_slot. Reusing "v1" for short's new weekly identity would
+        let those old rows satisfy has_established_schedule_baseline and
+        cause a false "missed run" report on the very first deploy. Short
+        must use a version distinct from medium/long's unchanged "v1"."""
+        import api.main as main_module
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100")
+        combos = main_module.enabled_validation_combinations()
+        short_versions = {sv for h, u, sv in combos if h == "short"}
+        medium_long_versions = {sv for h, u, sv in combos if h in ("medium", "long")}
+        assert short_versions == {main_module.SHORT_WEEKLY_SCHEDULE_VERSION}
+        assert medium_long_versions == {"v1"}
+        assert short_versions.isdisjoint(medium_long_versions)
 
     def test_short_slots_are_admitted_like_any_other_combination_when_enabled(self, isolated_db):
         slot = get_or_create_schedule_slot(horizon="short", universe="us",
@@ -1016,6 +1032,44 @@ class TestCatchupBootstrapSafety:
         assert find_schedule_slot(horizon="medium", universe="nifty100",
                                     scheduled_slot=this_week, schedule_version="v1") is None
 
+    def test_old_daily_short_ledger_rows_do_not_produce_a_false_missed_run_report(self, isolated_db, monkeypatch):
+        """2026-09-07 PR #87 corrective review — the decisive regression
+        test. Simulates a system that had the OLD daily short scheduler
+        running before this PR: seeds several schedule_version="v1" rows
+        for short/nifty100 with scheduled_slot values that are real daily
+        exchange-session closes (NOT Saturday-aligned). On the very first
+        startup after deploying the weekly-only policy, these old rows
+        must NOT satisfy has_established_schedule_baseline for short's
+        NEW weekly identity (SHORT_WEEKLY_SCHEDULE_VERSION) — if they did,
+        the bootstrap guard would be bypassed and this week's (never-yet-
+        run) slot would be wrongly reported as "missed" on day one."""
+        import api.main as main_module
+        monkeypatch.setenv("VALIDATION_AUTO_SHORT_UNIVERSES", "nifty100")
+        # Seed OLD daily-session rows exactly as the removed
+        # _short_validation_schedule_loop used to — schedule_version="v1",
+        # scheduled_slot = a daily close time, not a Saturday.
+        old_daily_close = datetime(2026, 8, 12, 10, 0, tzinfo=timezone.utc)  # a Wednesday close
+        get_or_create_schedule_slot(horizon="short", universe="nifty100", scheduled_slot=old_daily_close,
+                                     schedule_version="v1", now=old_daily_close)
+        now_utc = datetime(2026, 8, 15, 13, 0, tzinfo=timezone.utc)  # the following Saturday, 1h past 12:00 UTC
+
+        missed, this_weeks_slot, next_slot = main_module.compute_missed_validation_combinations(now_utc)
+
+        # short/nifty100 must NOT appear as missed — its NEW weekly identity
+        # has never had a chance to run yet; the OLD daily row is a
+        # different identity entirely and must not satisfy the baseline
+        # guard for it.
+        assert "short/nifty100" not in missed
+        # Directly confirm the mechanism: no baseline exists yet under the
+        # NEW version, even though one clearly exists under the old "v1".
+        from services.validation_engine import has_established_schedule_baseline
+        assert has_established_schedule_baseline(
+            horizon="short", universe="nifty100", schedule_version="v1"
+        ) is True  # the old daily rows are still there, untouched
+        assert has_established_schedule_baseline(
+            horizon="short", universe="nifty100", schedule_version=main_module.SHORT_WEEKLY_SCHEDULE_VERSION
+        ) is False  # but the NEW weekly identity has no baseline yet
+
     def test_cadence_and_short_and_manual_behavior_unaffected_by_rollout1(self):
         """Sanity cross-check (Stage 3's non-regression list) — this
         correction touches only the catch-up bootstrap path; the
@@ -1118,7 +1172,7 @@ class TestAutoShortSchedulerStructure:
         import api.main as main_module
         monkeypatch.delenv("VALIDATION_AUTO_SHORT_UNIVERSES", raising=False)
         combos = main_module.enabled_validation_combinations()
-        assert all(h != "short" for h, _u in combos)
+        assert all(h != "short" for h, _u, _sv in combos)
 
     def test_enabled_universes_use_stable_canonical_order(self):
         import api.main as main_module
@@ -1128,7 +1182,7 @@ class TestAutoShortSchedulerStructure:
             combos = main_module.enabled_validation_combinations()
         finally:
             del os.environ["VALIDATION_AUTO_SHORT_UNIVERSES"]
-        short_combos = [u for h, u in combos if h == "short"]
+        short_combos = [u for h, u, _sv in combos if h == "short"]
         assert short_combos == ["nifty100", "midcap", "us"]
 
     def test_weekly_scheduler_calls_only_execute_admitted_validation(self):
@@ -1140,10 +1194,18 @@ class TestAutoShortSchedulerStructure:
         assert "complete_running_attempt_with_computed_result(" not in src
 
     def test_weekly_scheduler_retains_schedule_version_v1(self):
+        """2026-09-07 PR #87 corrective review: the loop now passes
+        schedule_version=sv (a per-combination variable — short uses
+        SHORT_WEEKLY_SCHEDULE_VERSION, medium/long use "v1"), not a bare
+        literal "v1" for every call. Verified behaviorally instead (see
+        test_all_enabled_combinations_admitted_under_the_same_scheduled_slot
+        in test_validation_scheduler_loop_behavior.py, which asserts the
+        actual per-horizon schedule_version values used at admission)."""
         import inspect
         import api.main as main_module
         src = inspect.getsource(main_module._validation_schedule_loop)
-        assert 'schedule_version="v1"' in src
+        assert "schedule_version=sv" in src
+        assert 'schedule_version="v1"' not in src
 
     def test_weekly_scheduler_uses_the_shared_saturday_slot_not_a_resolved_session_close(self):
         """2026-09: short no longer uses its own resolved exchange-session
