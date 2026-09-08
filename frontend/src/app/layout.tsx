@@ -76,9 +76,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 mobile removes any chance of that; sm+ keeps them side by
                 side as before. */}
             <div className="border-t border-dark-border/40 px-3 sm:px-4 py-1.5">
-              <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
+              <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 sm:gap-3">
                 <div className="min-w-0"><SelectedMarketStatusInline /></div>
-                <div className="flex items-center gap-2 shrink-0 sm:ml-auto">
+                {/* Right-aligned on every width (not just sm+) — was
+                    left-aligned directly under Market Status on mobile with
+                    barely any gap, so the dropdown's open panel visually sat
+                    right on top of the status line above it (2026-09-08
+                    user report). `ml-auto` here pushes it to the row's own
+                    right edge even while stacked in a flex-col. */}
+                <div className="flex items-center gap-2 shrink-0 ml-auto">
                   <GlobalMarketDropdown />
                   <UserMenu />
                   <div className="flex items-center lg:hidden">
