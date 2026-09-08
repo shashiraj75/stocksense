@@ -50,39 +50,63 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Providers>
           <NavHeightObserver />
           <nav id="site-nav" className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg sm:bg-dark-bg/90 backdrop-blur-none sm:backdrop-blur-md">
-            {/* Row 1 (2026-09-08 single-line redesign): Logo · Search ·
+            {/* Mobile header (< sm) — deliberately a separate, explicitly
+                stacked layout rather than the same flex-wrap row reflowing
+                itself, which produced an uneven, "accidental" looking stack
+                (2026-09-08 user report: alignment on mobile "doesn't look
+                good at all"). Four clean rows: Logo+Hamburger, Search,
+                Clock+Status, Market/Username — each own row is internally
+                aligned rather than letting pieces wrap independently. */}
+            <div className="sm:hidden">
+              <div className="px-3 pt-2.5 flex items-center justify-between gap-3">
+                <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base shrink-0">
+                  <TrendingUp size={20} />
+                  <span>StockSense360</span>
+                </Link>
+                <MobileNav links={NAV_LINKS} />
+              </div>
+              <div className="px-3 pt-2"><SearchBar /></div>
+              <div className="px-3 pt-2 flex items-center gap-3 min-w-0">
+                <LiveClock inline />
+                <span className="text-dark-border text-xs shrink-0">|</span>
+                <div className="min-w-0">
+                  <SelectedMarketStatusInline />
+                </div>
+              </div>
+              <div className="px-3 pt-2 pb-2.5 flex items-center justify-end gap-2">
+                <GlobalMarketDropdown />
+                <UserMenu />
+              </div>
+            </div>
+
+            {/* Desktop/tablet header (sm+) — one line: Logo · Search ·
                 Clock · Market Status (selected market only) · Market
-                Dropdown · Username · Hamburger — all on one line, wrapping
-                gracefully (never disappearing) on narrow widths instead of
-                being split across separate conditionally-hidden rows, which
-                is what caused the earlier tablet-width dead zone. Clock and
-                market status are the flex-wrap-able middle group so they
-                drop below Logo+Search first on a narrow viewport, while
-                everything else stays together as one right-aligned cluster
-                (a single `ml-auto` on that cluster, not also a growing
-                search field — combining both left an ugly dead gap between
-                the market status and the dropdown/username). */}
-            <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex items-center flex-wrap gap-x-4 gap-y-2">
+                Dropdown · Username. Clock+status is the flex-wrap-able
+                middle group so it drops onto its own line first on a
+                mid-width viewport, while the dropdown/username cluster
+                stays pinned right via a single `ml-auto` (not also a
+                growing search field — combining both left a dead gap). */}
+            <div className="hidden sm:flex max-w-7xl mx-auto px-4 py-2.5 items-center flex-wrap gap-x-4 gap-y-2">
               {/* Logo */}
-              <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base sm:text-lg shrink-0">
+              <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-lg shrink-0">
                 <TrendingUp size={20} />
-                <span className="hidden sm:inline">StockSense360</span>
+                <span>StockSense360</span>
               </Link>
 
               {/* Search — fixed comfortable width, not flex-growing, so it
                   doesn't fight the right-hand cluster's own ml-auto for
                   the row's free space. */}
-              <div className="min-w-0 w-full sm:w-64 shrink-0 order-3 sm:order-none"><SearchBar /></div>
+              <div className="min-w-0 w-64 shrink-0"><SearchBar /></div>
 
               {/* Everything else — Clock, selected-market status, market
                   dropdown, and username — as one right-aligned cluster,
                   in that left-to-right order. Wraps as a whole onto its
-                  own line on a narrow viewport rather than each piece
+                  own line on a mid-width viewport rather than each piece
                   wrapping independently and drifting out of alignment. */}
               <div className="flex items-center flex-wrap gap-x-4 gap-y-2 ml-auto">
                 <div className="flex items-center flex-wrap gap-x-3 gap-y-1 shrink-0">
                   <LiveClock inline />
-                  <span className="hidden sm:inline text-dark-border text-xs shrink-0">|</span>
+                  <span className="text-dark-border text-xs shrink-0">|</span>
                   <SelectedMarketStatusInline />
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
