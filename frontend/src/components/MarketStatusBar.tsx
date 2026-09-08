@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { getMarketStatus } from "@/utils/marketHours";
+import { useGlobalMarketContext } from "@/hooks/useGlobalMarketContext";
 import clsx from "clsx";
 
 const MARKETS = [
@@ -24,13 +25,20 @@ function useMarketStatuses() {
   return statuses;
 }
 
-/** Inline version — sits inside the top navbar row */
-export function MarketStatusInline() {
+/** Inline version — sits inside the top navbar row.
+ * `onlyKey` (added for the single-line header layout, see layout.tsx)
+ * restricts rendering to that one market — e.g. only NSE India while the
+ * user's selected global context is "IN" — instead of all three. Omitted
+ * (or a key MarketStatusBar's MARKETS doesn't have, e.g. "COMMODITY") keeps
+ * the original all-markets behavior/renders nothing respectively. */
+export function MarketStatusInline({ onlyKey }: { onlyKey?: string } = {}) {
   const statuses = useMarketStatuses();
   if (!statuses) return null;
+  const visible = onlyKey ? statuses.filter(s => s.key === onlyKey) : statuses;
+  if (!visible.length) return null;
   return (
     <div className="flex items-center flex-wrap gap-x-4 gap-y-1">
-      {statuses.map(({ key, label, flag, status }) => (
+      {visible.map(({ key, label, flag, status }) => (
         <div key={key} className="flex flex-col shrink-0">
           <div className="flex items-center gap-1.5">
             <span className="text-sm leading-none">{flag}</span>
@@ -56,4 +64,13 @@ export function MarketStatusInline() {
       ))}
     </div>
   );
+}
+
+/** Header status pill scoped to whichever market the user has selected via
+ * GlobalMarketDropdown (2026-09-08 user request: "market status should be
+ * visible for the selected market only"). Renders nothing for "COMMODITY" —
+ * MarketStatusBar has no commodity-market status to show. */
+export function SelectedMarketStatusInline() {
+  const [context] = useGlobalMarketContext();
+  return <MarketStatusInline onlyKey={context} />;
 }
