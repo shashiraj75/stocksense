@@ -32,18 +32,30 @@ export function UserMenu() {
     );
   }
 
-  const initials = user.email?.slice(0, 2).toUpperCase() ?? "U";
+  // First name instead of two-letter initials (user request, 2026-09-08) —
+  // `first_name` is the field accept-terms/page.tsx actually collects and
+  // persists to user_metadata; fall back to a full_name's first word, then
+  // the email's local-part, then a generic "Account" so this never renders
+  // blank for a legacy user who signed up before first_name was collected.
+  const firstName =
+    user.user_metadata?.first_name?.trim()
+    || user.user_metadata?.full_name?.trim()?.split(/\s+/)[0]
+    || user.email?.split("@")[0]
+    || "Account";
   const avatarUrl = user.user_metadata?.avatar_url;
 
   return (
     <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-8 h-8 rounded-full overflow-hidden border-2 border-dark-border hover:border-brand-500 transition-colors flex items-center justify-center bg-brand-500/20 text-brand-400 text-xs font-bold"
+        className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border-2 border-dark-border hover:border-brand-500 transition-colors bg-brand-500/10 text-gray-200 text-xs font-semibold"
       >
-        {avatarUrl
-          ? <img src={avatarUrl} alt="avatar" className="w-full h-full object-cover" />
-          : initials}
+        <span className="w-6 h-6 rounded-full overflow-hidden shrink-0 flex items-center justify-center bg-brand-500/20 text-brand-400 font-bold">
+          {avatarUrl
+            ? <img src={avatarUrl} alt="avatar" className="w-full h-full object-cover" />
+            : firstName.slice(0, 1).toUpperCase()}
+        </span>
+        <span className="max-w-[100px] truncate">{firstName}</span>
       </button>
 
       {open && (
