@@ -50,65 +50,26 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <Providers>
           <NavHeightObserver />
           <nav id="site-nav" className="sticky top-0 z-10 border-b border-dark-border bg-dark-bg sm:bg-dark-bg/90 backdrop-blur-none sm:backdrop-blur-md">
-            {/* Mobile header (< sm) — deliberately a separate, explicitly
-                stacked layout rather than the same flex-wrap row reflowing
-                itself, which produced an uneven, "accidental" looking stack
-                (2026-09-08 user report: alignment on mobile "doesn't look
-                good at all"). Four clean rows: Logo+Hamburger, Search,
-                Clock+Status, Market/Username — each own row is internally
-                aligned rather than letting pieces wrap independently. */}
-            <div className="sm:hidden">
-              <div className="px-3 pt-2.5 flex items-center justify-between gap-3">
-                <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base shrink-0">
-                  <TrendingUp size={20} />
-                  <span>StockSense360</span>
-                </Link>
-                <MobileNav links={NAV_LINKS} />
-              </div>
-              <div className="px-3 pt-2"><SearchBar /></div>
-              <div className="px-3 pt-2 flex items-center gap-3 min-w-0">
-                <LiveClock inline />
-                <span className="text-dark-border text-xs shrink-0">|</span>
-                <div className="min-w-0">
-                  <SelectedMarketStatusInline />
-                </div>
-              </div>
-              <div className="px-3 pt-2 pb-2.5 flex items-center justify-end gap-2">
-                <GlobalMarketDropdown />
-                <UserMenu />
-              </div>
-            </div>
-
-            {/* Desktop/tablet header (sm+) — one line: Logo · Search ·
-                Clock · Market Status (selected market only) · Market
-                Dropdown · Username. Clock+status is the flex-wrap-able
-                middle group so it drops onto its own line first on a
-                mid-width viewport, while the dropdown/username cluster
-                stays pinned right via a single `ml-auto` (not also a
-                growing search field — combining both left a dead gap). */}
-            <div className="hidden sm:flex max-w-7xl mx-auto px-4 py-2.5 items-center flex-wrap gap-x-4 gap-y-2">
-              {/* Logo */}
-              <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-lg shrink-0">
+            {/* 2026-09-08 user-specified 4-row structure — replaces the
+                earlier single-line/flex-wrap header entirely, for every
+                viewport width (not just mobile): the row-per-concern shape
+                the user asked for already reads cleanly at any width, so
+                there's no separate mobile/desktop variant to keep in sync.
+                  Row 1: Logo ······················· Date/Time (right)
+                  Row 2: Market Status · Market Dropdown · Username
+                  Row 3: Live index ticker ribbon
+                  Row 4: Stock search bar */}
+            <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2.5 flex items-center justify-between gap-3">
+              <Link href="/" className="flex items-center gap-1.5 text-brand-500 font-bold text-base sm:text-lg shrink-0">
                 <TrendingUp size={20} />
                 <span>StockSense360</span>
               </Link>
+              <LiveClock inline />
+            </div>
 
-              {/* Search — fixed comfortable width, not flex-growing, so it
-                  doesn't fight the right-hand cluster's own ml-auto for
-                  the row's free space. */}
-              <div className="min-w-0 w-64 shrink-0"><SearchBar /></div>
-
-              {/* Everything else — Clock, selected-market status, market
-                  dropdown, and username — as one right-aligned cluster,
-                  in that left-to-right order. Wraps as a whole onto its
-                  own line on a mid-width viewport rather than each piece
-                  wrapping independently and drifting out of alignment. */}
-              <div className="flex items-center flex-wrap gap-x-4 gap-y-2 ml-auto">
-                <div className="flex items-center flex-wrap gap-x-3 gap-y-1 shrink-0">
-                  <LiveClock inline />
-                  <span className="text-dark-border text-xs shrink-0">|</span>
-                  <SelectedMarketStatusInline />
-                </div>
+            <div className="border-t border-dark-border/40 px-3 sm:px-4 py-1.5">
+              <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+                <div className="min-w-0"><SelectedMarketStatusInline /></div>
                 <div className="flex items-center gap-2 shrink-0">
                   <GlobalMarketDropdown />
                   <UserMenu />
@@ -119,7 +80,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </div>
             </div>
 
-            {/* Row 2: live index ticker — NIFTY/SENSEX, S&P/NASDAQ/DOW,
+            {/* Row 3: live index ticker — NIFTY/SENSEX, S&P/NASDAQ/DOW,
                 Bitcoin. A continuously-scrolling marquee (TickerRibbon)
                 instead of a static horizontally-scrollable row, so every
                 index is visible in turn without the user needing to scroll
@@ -128,9 +89,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <TickerRibbon />
             </div>
 
-            {/* Row 3: Nav links (desktop only). The market dropdown now
-                lives once, in Row 1, alongside Username — no longer
-                duplicated here. */}
+            {/* Row 4: Stock search bar. */}
+            <div className="border-t border-dark-border/40 px-3 sm:px-4 py-2">
+              <div className="max-w-7xl mx-auto sm:max-w-xs"><SearchBar /></div>
+            </div>
+
+            {/* Row 5: Nav links (desktop only). */}
             <div className="hidden lg:block border-t border-dark-border/60">
               <div className="max-w-7xl mx-auto px-4 flex items-center gap-3">
                 <NavLinks links={NAV_LINKS} />
