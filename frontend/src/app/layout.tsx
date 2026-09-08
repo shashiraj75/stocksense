@@ -67,10 +67,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <LiveClock inline />
             </div>
 
+            {/* Row 2 stacks vertically on mobile (flex-col) — on a narrow
+                phone, Market Status (which can itself be two lines: "NSE
+                India Open" + "Closes at ...") and the Dropdown/Username
+                cluster were both fighting for the same single row and
+                visually colliding/overlapping (2026-09-08 user report:
+                "totally corrupted, all jumbled up"). Two clean rows on
+                mobile removes any chance of that; sm+ keeps them side by
+                side as before. */}
             <div className="border-t border-dark-border/40 px-3 sm:px-4 py-1.5">
-              <div className="max-w-7xl mx-auto flex items-center justify-between gap-3">
+              <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 sm:gap-3">
                 <div className="min-w-0"><SelectedMarketStatusInline /></div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 sm:ml-auto">
                   <GlobalMarketDropdown />
                   <UserMenu />
                   <div className="flex items-center lg:hidden">
