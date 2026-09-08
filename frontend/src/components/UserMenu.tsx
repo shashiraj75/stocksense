@@ -48,14 +48,14 @@ export function UserMenu() {
     <div ref={ref} className="relative shrink-0">
       <button
         onClick={() => setOpen(o => !o)}
-        className="flex items-center gap-2 pl-1 pr-3 py-1 rounded-full border-2 border-dark-border hover:border-brand-500 transition-colors bg-brand-500/10 text-gray-200 text-xs font-semibold"
+        className="flex items-center gap-1.5 pl-1 pr-2.5 sm:pr-3 py-1 rounded-full border-2 border-dark-border hover:border-brand-500 transition-colors bg-brand-500/10 text-gray-200 text-xs font-semibold"
       >
         <span className="w-6 h-6 rounded-full overflow-hidden shrink-0 flex items-center justify-center bg-brand-500/20 text-brand-400 font-bold">
           {avatarUrl
             ? <img src={avatarUrl} alt="avatar" className="w-full h-full object-cover" />
             : firstName.slice(0, 1).toUpperCase()}
         </span>
-        <span className="max-w-[100px] truncate">{firstName}</span>
+        <span className="max-w-[72px] sm:max-w-[100px] truncate">{firstName}</span>
       </button>
 
       {open && (
