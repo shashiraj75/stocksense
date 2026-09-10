@@ -471,17 +471,17 @@ def assert_reconciles(stage: str, fetched: int, included: int, excluded: int) ->
 # THE FIXED AUDIT PRICE-DATA CUTOFF.
 #
 # Frozen deliberately as a module constant and NOT as a CLI argument: see
-# section 7. It matches the instant at which the frozen 51-run / 15,412-row
-# population extract was taken, so population membership and horizon maturity
-# are evaluated against the SAME instant and no row can be in the population
-# but judged against a different clock.
+# section 7. It matches the instant at which the 2026-09-10 frozen 78-run /
+# 23,888-row short-horizon population extract was taken, so population
+# membership and horizon maturity are evaluated against the SAME instant and
+# no row can be in the population but judged against a different clock.
 #
 # Advancing this value is a committed, reviewed source change. Because
 # `horizon_maturity` is monotone in the cutoff, advancing it can only ever
 # ADD mature rows — it can never remove one, and can never be used to drop a
 # row whose outcome has become inconvenient.
-AUDIT_PRICE_DATA_CUTOFF_UTC = _dt.datetime(2026, 8, 22, 0, 0, 0,
-                                           tzinfo=_dt.timezone.utc)
+AUDIT_PRICE_DATA_CUTOFF_UTC = _dt.datetime(
+    2026, 9, 10, 4, 8, 45, 101429, tzinfo=_dt.timezone.utc)
 
 # Registration provenance — asserted by the tests so the pre-registration
 # claim cannot be quietly back-dated.
