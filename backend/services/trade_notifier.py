@@ -1,6 +1,7 @@
 """
-Paper trade target / stop-loss proximity email notifications, plus Auto
-Close trigger-confirmation emails.
+Paper trade target / stop-loss proximity email notifications, plus
+trigger-confirmation emails for any trade that closes on a genuine
+stop-loss/target trigger.
 
 Runs periodically (see _paper_trade_notify_loop in api/main.py). Two
 independent things happen per cycle:
@@ -14,25 +15,29 @@ independent things happen per cycle:
    about it approaching — the only email an Auto Close trade should ever
    generate is the one below, confirming what already happened. This scan
    also respects each user's paper_portfolio.email_notifications_enabled
-   preference — these are routine "you might want to look at this" alerts,
-   which the Notifications toggle is meant to govern.
-2. Auto Close trigger-confirmation emails — for every *closed* trade with
-   trade_management_mode == 'auto' and an exit_reason of STOP_LOSS or
-   TARGET_HIT, emails the owner once that the position was closed
-   automatically, with the trigger price, % vs entry, and realized P&L.
-   Deduped by reusing the same target_notified_at/stop_notified_at columns
-   the proximity path already uses — a timestamp older than the trade's own
+   preference (off by default, opt-in — see postgres_store.py) — these are
+   routine "you might want to look at this" alerts, which the
+   Notifications toggle is meant to govern.
+2. Trigger-confirmation emails — for every *closed* trade with an
+   exit_reason of STOP_LOSS or TARGET_HIT (regardless of
+   trade_management_mode — corrected 2026-09-14; this used to be scoped
+   to trade_management_mode == 'auto' only, missing a Manual/AI-assisted
+   trade closed via the "Close Now" button after its own trigger fired),
+   emails the owner once that the position closed on a genuine trigger,
+   with the trigger price, % vs entry, and realized P&L. Deduped by
+   reusing the same target_notified_at/stop_notified_at columns the
+   proximity path already uses — a timestamp older than the trade's own
    closed_at means "not yet notified about this particular close", so it
    still works correctly even for a trade that received a proximity email
-   while still open (e.g. before being switched from Manual to Auto) and
-   later closed. UNLIKE (1), this ignores email_notifications_enabled —
-   it's a trade-event confirmation (something already happened), not a
-   routine alert, so the Notifications toggle does not suppress it.
+   while still open and later closed. UNLIKE (1), this ignores
+   email_notifications_enabled — it's a trade-event confirmation
+   (something already happened), not a routine alert, so the
+   Notifications toggle does not suppress it.
 
 Each trigger is deduped via a *_notified_at timestamp (+ a cooldown for the
 proximity path) so a price hovering near the line doesn't spam the same
-email every cycle, and a trade can't receive its own auto-close
-confirmation email twice.
+email every cycle, and a trade can't receive its own trigger-confirmation
+email twice.
 
 Requires RESEND_API_KEY to be set (same Resend account used for invite
 emails, just a distinct sender address so users can tell the two apart).
@@ -166,7 +171,7 @@ def _notify_near_price() -> None:
 
 def _trigger_email_html(
     symbol: str, market: str, entry_price: float, exit_price: float,
-    pct: float, kind: str, pnl: float | None,
+    pct: float, kind: str, pnl: float | None, is_auto: bool,
 ) -> str:
     currency = "₹" if market == "IN" else "$"
     label = "target achieved" if kind == "target" else "stop loss hit"
@@ -190,7 +195,7 @@ def _trigger_email_html(
           <strong style="color:#fff;">{currency}{exit_price:,.2f}</strong>
           (<strong style="color:{color};">{"+" if pct >= 0 else "−"}{abs(pct):.1f}%</strong>).
         </p>
-        <p style="color:#cbd5e1; font-size:14px; margin:8px 0 0;">Position closed automatically.</p>
+        <p style="color:#cbd5e1; font-size:14px; margin:8px 0 0;">{"Position closed automatically." if is_auto else "Position closed."}</p>
         <p style="color:#9ca3af; font-size:13px; margin:12px 0 0;">Entry: {currency}{entry_price:,.2f}</p>
         <p style="color:#9ca3af; font-size:13px; margin:2px 0 0;">Exit: {currency}{exit_price:,.2f}</p>
         {pnl_html}
@@ -203,9 +208,17 @@ def _trigger_email_html(
 
 
 def _notify_auto_close_triggers() -> None:
-    """Email owners of Auto Close trades that have just closed on a genuine
-    stop-loss/target trigger (not a manual close) — the only notification an
-    Auto Close trade should ever generate, per the module docstring.
+    """Email owners of any trade that has just closed on a genuine
+    stop-loss/target trigger — regardless of trade_management_mode. This
+    used to be scoped to Auto Close trades only (trade_management_mode ==
+    'auto'), which meant a Manual/AI-assisted trade closed via the "Close
+    Now" button after its trigger fired (see checkExitTrigger/
+    showManualBanner in the frontend) never sent this confirmation at all
+    — a real gap, corrected 2026-09-14 per direct user feedback ("for the
+    triggered trades we also need the email notifications"). A plain
+    manual sell (exit_reason == 'MANUAL', no trigger involved) is still
+    correctly excluded by the exit_reason filter below — this is
+    deliberately about a genuine trigger event, not every close.
 
     Deliberately NOT filtered by email_notifications_enabled: this is a
     trade-event confirmation (something already happened to the user's
@@ -215,17 +228,17 @@ def _notify_auto_close_triggers() -> None:
     with _conn() as conn:
         rows = conn.execute(
             """SELECT t.id, t.symbol, t.market, t.entry_price, t.exit_price, t.quantity,
-                      t.exit_reason, t.closed_at, t.target_notified_at, t.stop_notified_at, p.email
+                      t.exit_reason, t.closed_at, t.target_notified_at, t.stop_notified_at, p.email,
+                      t.trade_management_mode
                FROM paper_trades t
                JOIN paper_portfolio p ON p.user_id = t.user_id
                WHERE t.status = 'CLOSED'
-                 AND t.trade_management_mode = 'auto'
                  AND t.exit_reason IN ('STOP_LOSS', 'TARGET_HIT')
                  AND t.exit_price IS NOT NULL
                  AND p.email IS NOT NULL"""
         ).fetchall()
 
-    for (tid, symbol, market, entry_price, exit_price, qty, exit_reason, closed_at, t_notif, s_notif, email) in rows:
+    for (tid, symbol, market, entry_price, exit_price, qty, exit_reason, closed_at, t_notif, s_notif, email, mgmt_mode) in rows:
         kind = "target" if exit_reason == "TARGET_HIT" else "stop"
         # Reuses target_notified_at/stop_notified_at (the same columns the
         # proximity path uses) rather than a new column — a notified_at that
@@ -248,7 +261,7 @@ def _notify_auto_close_triggers() -> None:
         subject_label = "target achieved" if kind == "target" else "stop loss hit"
         sent = _send_email(
             email, f"{subject_emoji} {symbol} {subject_label} — paper trade closed",
-            _trigger_email_html(symbol, market, entry_price, exit_price, pct, kind, pnl),
+            _trigger_email_html(symbol, market, entry_price, exit_price, pct, kind, pnl, mgmt_mode == "auto"),
         )
         if sent:
             col = "target_notified_at" if kind == "target" else "stop_notified_at"

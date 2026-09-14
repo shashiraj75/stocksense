@@ -335,42 +335,29 @@ function OpenTradeRow({
   // conveys the same information either way.
   const shouldAnimate = marketOpen === true && !prefersReducedMotion;
 
-  // In-page banner — the reliable, always-on on-screen channel. Fires once
-  // per (trade, kind) per session, regardless of notificationsEnabled or
-  // browser Notification permission (2026-09-14 fix: this used to be the
-  // ONLY on-screen path guarded behind both, and most users never
-  // explicitly grant native browser notification permission — meaning the
-  // on-screen alert effectively never appeared for them at all, even
-  // though the proximity email arrived, exactly the gap a real user
-  // report described: "we receive the email notification but the
-  // auto-triggered notifications are not shown on the screen"). Costs
-  // nothing to show and carries no email-spam risk, so it is deliberately
-  // NOT gated by the email preference — that preference now governs email
-  // only, per postgres_store.py's own updated column comment.
-  useEffect(() => {
-    if (marketOpen !== true) return;
-    if (nearTarget) {
-      const key = `${trade.id}-target-banner`;
-      if (!_notifiedThisSession.has(key)) {
-        _notifiedThisSession.add(key);
-        onNotify(`🎯 ${trade.symbol} is near your target price (${currency}${livePrice?.toLocaleString()} vs ${currency}${trade.target_price?.toLocaleString()})`, "success");
-      }
-    }
-    if (nearStopLoss) {
-      const key = `${trade.id}-stop-banner`;
-      if (!_notifiedThisSession.has(key)) {
-        _notifiedThisSession.add(key);
-        onNotify(`⚠️ ${trade.symbol} is near your stop loss (${currency}${livePrice?.toLocaleString()} vs ${currency}${trade.stop_loss?.toLocaleString()})`, "warning");
-      }
-    }
-  }, [nearTarget, nearStopLoss, trade.id, trade.symbol, livePrice, currency, trade.target_price, trade.stop_loss, marketOpen, onNotify]);
+  // 2026-09-14: a routine in-page banner for "near target"/"near stop
+  // loss" (not yet triggered, just approaching) was tried here and
+  // reverted the same day per direct user feedback — it crowded the page
+  // with continuous proximity messages for every open position, which is
+  // exactly what the user does not want to see. The user wants on-screen
+  // feedback only for an ACTUAL close/trigger event, which the existing
+  // closeMutation.onSuccess handler below (and showManualBanner, for a
+  // manual-mode trade whose trigger has fired but not yet been acted on)
+  // already covers — nothing needed here for the routine "approaching"
+  // case. See the Paper Trading Notification Opt-In Default release doc
+  // (Documentation/Engineering-Handbook/Releases/) for the full history:
+  // the underlying on-screen-alert-never-shown bug this once fixed is
+  // resolved differently now — proximity email stays a deliberate opt-in
+  // (see the Notifications toggle) rather than being mirrored on-screen.
 
-  // Native OS browser popup — an opt-in bonus layer on top of the always-on
-  // banner above, for a user who wants to be alerted even while this tab
-  // isn't focused. Fires once per (trade, kind) per session, only while
-  // this tab is open, permission has been explicitly granted, and the
-  // trade's own market is open (a closed-market position shouldn't imply
-  // the same "act now" urgency as a live one).
+  // Native OS browser popup — an opt-in layer, gated behind the
+  // Notifications preference AND explicit browser permission, for a user
+  // who explicitly wants to be alerted about a trade approaching its
+  // target/stop-loss even while this tab isn't focused. Fires once per
+  // (trade, kind) per session, only while this tab is open, permission
+  // has been explicitly granted, and the trade's own market is open (a
+  // closed-market position shouldn't imply the same "act now" urgency as
+  // a live one).
   useEffect(() => {
     if (typeof window === "undefined" || !("Notification" in window)) return;
     if (Notification.permission !== "granted") return;

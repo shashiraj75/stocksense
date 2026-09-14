@@ -1,6 +1,6 @@
 # Paper Trading Notification Opt-In Default and On-Screen Alert Fix
 
-**Status:** Implemented.
+**Status:** Implemented. **§7 below (same day) corrects §3's in-page banner and broadens the trigger-confirmation email scope — read that section for the final, current behavior.**
 
 ## 1. Trigger
 
@@ -48,3 +48,23 @@ Real user report, with direct evidence: Resend's own dashboard showed frequent "
 ## 6. Rollback
 
 Two independent, low-risk pieces: the schema/backfill change (revert the `ALTER COLUMN`/backfill lines; the `touched_at` column itself can stay, inert, if reverted) and the frontend wiring change (a plain revert of the `OpenTradeRow` effect split, restoring the single gated effect). Neither touches trade execution, portfolio balances, or any other Paper Trading state.
+
+## 7. Same-day correction — in-page banner reverted; trigger email scope broadened
+
+Direct user feedback on this fix's own §3 change, with a live screenshot: the new in-page banner (§3, point 1) crowded the page with continuous "near target"/"near stop loss" messages for every open position — exactly the opposite of what was wanted. The user's actual ask was narrower and different from what §3 assumed: **no on-screen reminder for the routine "approaching" case at all — on-screen feedback only for an actual close/trigger event** — plus a related, previously-unaddressed gap: **trigger-confirmation emails should not be limited to Auto Close trades.**
+
+### 7.1 In-page banner reverted
+
+The `OpenTradeRow` effect added in §3 (pushing an `onNotify` banner for `nearTarget`/`nearStopLoss`) is removed entirely. The native OS popup (§3, point 2) is unchanged — still an opt-in layer gated by both `notificationsEnabled` and browser permission. The page's pre-existing close/trigger banner (`closeMutation.onSuccess`, and `showManualBanner` for a Manual-mode trade whose trigger has fired but not yet been acted on) was never touched by either change and continues to cover exactly what the user asked to keep seeing.
+
+### 7.2 Trigger-confirmation email scope broadened (`services/trade_notifier.py`)
+
+Direct code reading during this correction found a second, real, previously-undiagnosed gap: `_notify_auto_close_triggers`'s own SQL filter required `trade_management_mode = 'auto'` — a Manual/AI-assisted trade closed via the frontend's "Close Now" button *after its own stop-loss/target trigger had genuinely fired* never sent this confirmation at all, only a trade the system closed itself did. The filter is now `exit_reason IN ('STOP_LOSS', 'TARGET_HIT')` with no `trade_management_mode` restriction — any trade that closes on a genuine trigger gets the confirmation email, regardless of mode. A plain manual sell (`exit_reason == 'MANUAL'`, no trigger involved) remains correctly excluded — this is deliberately about a genuine trigger event, not every close. The email copy's "Position closed automatically." line is now conditional (`is_auto` parameter) on whether the trade was actually auto-closed, so a manually-closed trigger doesn't misleadingly claim automatic execution.
+
+### 7.3 Tests
+
+- `frontend/src/app/paper-trading/__tests__/notificationChannels.test.ts` rewritten (3 tests): confirms no banner is pushed for the routine proximity case, the native popup remains the sole (opt-in) proximity channel, and the close/trigger banner is untouched.
+- New `tests/regression/test_trade_notifier_trigger_confirmation_scope.py` (backend, 5 tests): 2 structural (SQL no longer filters by `trade_management_mode`, still filters by a genuine trigger `exit_reason`), 1 direct test of `_trigger_email_html`'s conditional copy, and 2 behavioral tests proving a Manual-mode triggered close now emails while a plain manual sell still does not.
+- Both files sanity-checked per SES-003 §4 (a check removed from each, confirmed the test fails, restored, reconfirmed green).
+- 52/52 targeted backend tests passing (`test_paper_trading_authorization.py` + the two notification-related new files + `test_paper_trading_idempotency.py`), 873/873 full frontend suite passing, clean `tsc --noEmit` (same two pre-existing stray-duplicate-file errors, unchanged).
+- No live-browser visual verification this session (same port-3000 constraint as §4) — still an open item.
