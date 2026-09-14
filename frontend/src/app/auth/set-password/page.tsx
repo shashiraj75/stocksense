@@ -1,6 +1,7 @@
 "use client";
 import { Suspense, useState, useEffect } from "react";
 import { supabase } from "@/lib/supabase";
+import { isAuthWeakPasswordError } from "@supabase/supabase-js";
 import { TrendingUp, Lock } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
@@ -41,10 +42,32 @@ function SetPasswordForm() {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
       router.push(next);
-    } catch {
-      // Never surface the raw Supabase message — may include session/token
-      // internals the user can't act on and that don't belong in the UI.
-      setMessage({ type: "error", text: "Unable to update the password. Please request a new reset link and try again." });
+    } catch (err) {
+      // 2026-09-14 fix: a real invited user's password submission was
+      // failing with Supabase's own "Password is known to be weak and
+      // easy to guess" rejection (a leaked-password/HaveIBeenPwned check —
+      // a legitimate security feature, not a bug) — confirmed directly via
+      // Supabase auth logs (PUT /user, 422). The blanket catch below was
+      // showing "request a new reset link and try again" for EVERY
+      // failure, including this one, which sent the user down a
+      // completely false trail: their link was valid and their session
+      // was already established (confirmed by the same logs — invite
+      // verify + login had already succeeded before this password
+      // submission). Only a genuinely session/token-related failure
+      // should ever suggest requesting a new link; a rejected password
+      // choice must say so plainly, so the user can just pick another one
+      // and retry on the same link.
+      if (isAuthWeakPasswordError(err)) {
+        setMessage({
+          type: "error",
+          text: "That password is too easy to guess (it matches a known leaked/weak password). Please choose a different, stronger password.",
+        });
+      } else {
+        // Never surface the raw Supabase message otherwise — may include
+        // session/token internals the user can't act on and that don't
+        // belong in the UI.
+        setMessage({ type: "error", text: "Unable to update the password. Please request a new reset link and try again." });
+      }
     } finally {
       setLoading(false);
     }
