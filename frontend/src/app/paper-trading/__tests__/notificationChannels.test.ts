@@ -1,16 +1,18 @@
 /**
- * Paper Trading notification channels — opt-in default correction
- * (2026-09-14). See the companion backend test
- * (test_paper_trading_notification_preference_opt_in.py) for the full
- * root-cause writeup.
+ * Paper Trading proximity notification channel (2026-09-14, revised).
  *
- * OpenTradeRow's proximity effects are too deeply embedded in a large,
- * data-fetching page component to mount in isolation without a substantial
- * new test harness (no test infrastructure exists for this page at all
- * yet) — these are structural/source tests, mirroring this codebase's own
- * established convention (e.g. the backend's test_daily_picks_raw_memory_
- * release.py) for verifying wiring properties directly against the source
- * text rather than skipping coverage entirely.
+ * An always-on in-page banner for "near target"/"near stop loss" was
+ * added earlier the same day, then reverted per direct user feedback —
+ * it crowded the page with continuous proximity messages for every open
+ * position. The user wants on-screen feedback only for an actual
+ * close/trigger event (already covered by closeMutation.onSuccess /
+ * showManualBanner, untouched by this change), and confirmed proximity
+ * email should stay off by default (unchanged from the earlier fix).
+ *
+ * These are structural/source tests — this page has no existing test
+ * infrastructure to mount OpenTradeRow in isolation, mirroring this
+ * codebase's own established convention for verifying wiring properties
+ * directly against source text.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
@@ -18,33 +20,15 @@ import { join } from "path";
 
 const SOURCE = readFileSync(join(__dirname, "..", "page.tsx"), "utf-8");
 
-describe("Paper Trading proximity notification channels", () => {
-  it("has two distinct effects: an always-on in-page banner and an opt-in native popup", () => {
-    expect(SOURCE).toContain("In-page banner — the reliable, always-on on-screen channel");
-    expect(SOURCE).toContain("Native OS browser popup — an opt-in bonus layer");
+describe("Paper Trading proximity notification channel", () => {
+  it("no in-page banner is pushed for the routine near-target/near-stop-loss case", () => {
+    expect(SOURCE).not.toContain("`${trade.id}-target-banner`");
+    expect(SOURCE).not.toContain("`${trade.id}-stop-banner`");
   });
 
-  it("the in-page banner effect is never gated by notificationsEnabled", () => {
-    const bannerEffectStart = SOURCE.indexOf("In-page banner — the reliable");
+  it("the native OS popup remains the only proximity channel, still opt-in (gated by both notificationsEnabled and browser permission)", () => {
     const nativeEffectStart = SOURCE.indexOf("Native OS browser popup");
-    expect(bannerEffectStart).toBeGreaterThan(-1);
-    expect(nativeEffectStart).toBeGreaterThan(bannerEffectStart);
-    const bannerEffectBody = SOURCE.slice(bannerEffectStart, nativeEffectStart);
-    expect(bannerEffectBody).not.toContain("if (!notificationsEnabled) return;");
-    expect(bannerEffectBody).not.toContain('if (Notification.permission !== "granted") return;');
-  });
-
-  it("the in-page banner effect calls onNotify for both nearTarget and nearStopLoss with distinct dedup keys", () => {
-    const bannerEffectStart = SOURCE.indexOf("In-page banner — the reliable");
-    const nativeEffectStart = SOURCE.indexOf("Native OS browser popup");
-    const bannerEffectBody = SOURCE.slice(bannerEffectStart, nativeEffectStart);
-    expect(bannerEffectBody).toContain("`${trade.id}-target-banner`");
-    expect(bannerEffectBody).toContain("`${trade.id}-stop-banner`");
-    expect((bannerEffectBody.match(/onNotify\(/g) ?? []).length).toBe(2);
-  });
-
-  it("the native popup effect is still gated by both notificationsEnabled and browser permission (unchanged, opt-in)", () => {
-    const nativeEffectStart = SOURCE.indexOf("Native OS browser popup");
+    expect(nativeEffectStart).toBeGreaterThan(-1);
     const nativeEffectBody = SOURCE.slice(nativeEffectStart, nativeEffectStart + 1500);
     expect(nativeEffectBody).toContain("if (!notificationsEnabled) return;");
     expect(nativeEffectBody).toContain('if (Notification.permission !== "granted") return;');
@@ -52,7 +36,10 @@ describe("Paper Trading proximity notification channels", () => {
     expect(nativeEffectBody).toContain("`${trade.id}-stop`");
   });
 
-  it("both effects share the same module-level dedup set, but with distinct keys so one channel's dedup never suppresses the other", () => {
-    expect(SOURCE).toContain("const _notifiedThisSession = new Set<string>();");
+  it("an actual close/trigger event still pushes an in-page banner via closeMutation", () => {
+    const closeMutationStart = SOURCE.indexOf("const closeMutation = useMutation({");
+    expect(closeMutationStart).toBeGreaterThan(-1);
+    const closeMutationBody = SOURCE.slice(closeMutationStart, closeMutationStart + 1200);
+    expect(closeMutationBody).toContain("onNotify(");
   });
 });
