@@ -395,11 +395,44 @@ CREATE TRIGGER trg_paper_trades_level_history_invariant
     BEFORE UPDATE ON paper_trades
     FOR EACH ROW EXECUTE FUNCTION enforce_paper_trade_level_history_invariant();
 
--- Per-user Paper Trading notification preference — gates both the trade
--- notifier's proximity/auto-close emails and (client-side) whether the
--- Notifications toggle asks for browser permission. Paper Trading only;
--- unrelated to Daily Picks alerts, which have their own separate mechanism.
-ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS email_notifications_enabled BOOLEAN NOT NULL DEFAULT true;
+-- Per-user Paper Trading notification preference — gates the trade
+-- notifier's proximity ("near target"/"near stop loss") emails and
+-- (client-side) whether the Notifications toggle asks for browser
+-- permission. Does NOT gate Auto Close trigger-confirmation emails (a
+-- trade-event confirmation, always sent — see trade_notifier.py's own
+-- docstring) or the in-app on-screen proximity banner (screen-only, no
+-- spam cost, always shown regardless of this preference — a 2026-09-14
+-- fix; it was previously incorrectly wired to this same column). Paper
+-- Trading only; unrelated to Daily Picks alerts, which have their own
+-- separate mechanism.
+ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS email_notifications_enabled BOOLEAN NOT NULL DEFAULT false;
+-- Was DEFAULT true — every user was silently opted into proximity emails
+-- with no explicit choice, confirmed by a real user report (many distinct
+-- accounts receiving frequent "near stop loss"/"near target" emails they
+-- never asked for). Corrected to opt-in. ALTER COLUMN ... SET DEFAULT is
+-- needed in addition to the ADD COLUMN above because that clause only
+-- takes effect for a column being newly created — this column already
+-- exists in production, so its DEFAULT must be changed explicitly here.
+ALTER TABLE paper_portfolio ALTER COLUMN email_notifications_enabled SET DEFAULT false;
+-- NULL = the user has never explicitly changed this preference via
+-- PATCH /api/paper-trading/notifications (set there, never anywhere
+-- else) — the one signal that distinguishes "still sitting at whatever
+-- the default was" from "the user actually chose true/false", which the
+-- one-time backfill below needs to stay safe on every future restart.
+ALTER TABLE paper_portfolio ADD COLUMN IF NOT EXISTS email_notifications_touched_at TIMESTAMPTZ;
+-- One-time backfill (2026-09-14, opt-in default correction): every
+-- pre-existing row was silently defaulted to true and never touched by
+-- its owner — corrected to the new opt-in default. Safe to re-run on
+-- every startup: once applied, a backfilled row has enabled=false AND
+-- touched_at IS NULL, so this WHERE clause matches nothing further for
+-- it; a user who later explicitly re-enables notifications gets
+-- touched_at set by the PATCH endpoint, permanently excluding that row
+-- from ever being touched by this statement again — unlike a plain
+-- value-based backfill (e.g. this file's own cash_usd 10000->100000
+-- precedent), a boolean genuinely has no "already migrated" value of its
+-- own to test for, so touched_at is the only safe discriminator.
+UPDATE paper_portfolio SET email_notifications_enabled = false
+    WHERE email_notifications_enabled = true AND email_notifications_touched_at IS NULL;
 -- Epic 007 Phase 3A — Intelligence Engine V1 shadow-run telemetry only.
 -- Additive, standalone table: nothing else reads from or writes to this
 -- table, and it is never joined against paper_trades/daily-picks tables.

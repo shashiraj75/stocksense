@@ -2617,15 +2617,25 @@ def update_management_mode(trade_id: int, req: ManagementModeRequest, user_id: s
 
 @router.patch("/notifications")
 def update_notification_preference(req: NotificationPreferenceRequest, user_id: str = Depends(get_current_user_id)):
-    """Toggles the single Paper Trading notification preference — gates both
-    the trade notifier's proximity/auto-close emails (checked directly
-    against this column) and, client-side, whether the Notifications button
-    asks for browser permission. Scoped to Paper Trading only; does not
-    touch Daily Picks alerts, which have their own separate mechanism."""
+    """Toggles the Paper Trading proximity-email preference — gates the
+    trade notifier's "near target"/"near stop loss" emails only. Does NOT
+    gate Auto Close trigger-confirmation emails (always sent — a trade-
+    event confirmation, not a routine alert; see trade_notifier.py) or the
+    in-app on-screen proximity banner (always shown, no spam cost).
+    Client-side, also controls whether the Notifications button asks for
+    browser permission. Scoped to Paper Trading only; does not touch Daily
+    Picks alerts, which have their own separate mechanism.
+
+    Also stamps email_notifications_touched_at — the one signal that lets
+    the one-time opt-in-default backfill in postgres_store.py tell "the
+    user explicitly chose a value" apart from "still sitting at whatever
+    the default was", so it never re-applies against a deliberate choice
+    on a future restart."""
     _ensure_portfolio(user_id)  # make sure the row exists before updating it
     with _conn() as conn:
         conn.execute(
-            "UPDATE paper_portfolio SET email_notifications_enabled = %s, updated_at = now() WHERE user_id = %s",
+            "UPDATE paper_portfolio SET email_notifications_enabled = %s, "
+            "email_notifications_touched_at = now(), updated_at = now() WHERE user_id = %s",
             (req.email_notifications_enabled, user_id)
         )
     return {"message": "Notification preference updated", "email_notifications_enabled": req.email_notifications_enabled}
