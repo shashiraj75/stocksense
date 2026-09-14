@@ -22,6 +22,7 @@ Learning Alpha Engine integration:
 import json
 import logging
 import math
+import multiprocessing
 import os
 import random
 import re
@@ -1448,6 +1449,150 @@ def _compute_portfolio_allocation(
     return weights, cash_pct
 
 
+def _subprocess_isolation_enabled() -> bool:
+    """
+    Read fresh on every call (never cached at import time) — mirrors this
+    codebase's own established kill-switch convention (e.g. the Growth/
+    Valuation Intelligence confidence-adjustment flags), specifically so
+    tests can toggle it via monkeypatch without needing a module reload.
+    Defaults OFF: this must be an explicit opt-in, same rollout posture as
+    every other kill switch in this codebase.
+    """
+    return os.getenv("DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED", "0") == "1"
+
+
+# Generous relative to a normal 20-50 minute run — exists only to bound an
+# otherwise-unbounded wait if the child hangs for a reason that isn't a
+# clean crash or an OS kill (both handled separately below, and detected
+# far faster than this timeout via the liveness poll in
+# _generate_picks_isolated).
+_SUBPROCESS_ISOLATION_TIMEOUT_S = int(os.getenv("DAILY_PICKS_SUBPROCESS_TIMEOUT_S", 3600))
+
+
+def _daily_picks_subprocess_target(market: str, job_id: str | None, result_queue) -> None:
+    """
+    Entry point run inside the spawned child process — see
+    _generate_picks_isolated's docstring for why this exists. Must stay a
+    plain top-level, module-scope function: multiprocessing's "spawn" start
+    method (used here deliberately, never "fork" — see
+    _generate_picks_isolated) re-imports this module fresh in the child and
+    looks this function up by qualified name, which only works for
+    top-level functions, not closures/bound methods.
+
+    A spawned child starts with a completely fresh interpreter and NO
+    logging handlers configured — none of the parent's (Uvicorn-configured)
+    logging setup carries over the way it would under "fork". Without this,
+    every one of _generate_picks_inner's log.info/log.warning calls
+    (including every memory_guard line this fix exists because of) would
+    silently vanish. Configured only if nothing is already configured, so
+    this is a no-op in any context (e.g. a test) that already set up
+    logging itself.
+    """
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s — %(message)s",
+        )
+    try:
+        payload, persisted_at = _generate_picks_inner(market, job_id=job_id)
+        result_queue.put(("ok", payload, persisted_at))
+    except Exception as e:
+        import traceback as _tb
+        # Only a plain string + formatted traceback text cross the process
+        # boundary — never the exception object itself. Some exceptions
+        # raised deep in this pipeline (provider client errors, etc.) are
+        # not guaranteed picklable, and a pickling failure here must never
+        # be how this reports a real failure.
+        result_queue.put(("error", str(e), _tb.format_exc()))
+
+
+def _generate_picks_isolated(market: str, job_id: str | None = None) -> tuple[dict, datetime | None]:
+    """
+    Runs _generate_picks_inner in a freshly spawned child process instead of
+    this long-lived shared process, so Phase 1's allocation-heavy pandas/
+    numpy prediction work is *fully* reclaimed by the OS when the child
+    exits — see Documentation/Engineering-Handbook/Architecture/Daily-
+    Picks-Cross-Run-Memory-Ratchet-Investigation-and-Subprocess-Isolation-
+    Design.md for the full evidence trail this implements. Two prior
+    in-process fixes (Product Integrity #023's per-horizon accumulator release; the
+    2026-08-24 run-end release_memory() fix) already handle Python-object
+    retention; neither can touch glibc allocator arena fragmentation, which
+    is not a Python-level leak and is exactly what this fix targets. Gated
+    behind _subprocess_isolation_enabled() — disabled by default, same
+    rollout posture as every other kill switch in this codebase.
+
+    Uses "spawn", never "fork": a fresh interpreter with no inherited
+    threads, open DB connections, or already-fragmented allocator arenas —
+    the clean-slate guarantee this fix depends on. (Sharing an open DB
+    connection's file descriptor into a forked child is the classic
+    fork-unsafety hazard for SQLAlchemy/psycopg2; "spawn" never does this —
+    the child re-imports everything and opens its own connections from
+    scratch, exactly as this same process already does at every normal
+    startup.) _generate_picks_inner already performs its own Postgres
+    persistence internally (see its own docstring) — nothing about that
+    changes here; the child simply does it under its own, freshly-opened
+    connection instead of the parent's.
+
+    Designed to be indistinguishable from calling _generate_picks_inner
+    directly from generate_picks()'s point of view: same (payload,
+    persisted_at) return shape on success; any child-side exception is
+    re-raised here as a RuntimeError so generate_picks()'s existing
+    `except Exception` handling (marking the job failed with a bounded
+    last_error) needs no change. A child killed by the OS (e.g. an
+    OOM-kill — a SIGKILL that never runs any Python exception handler, so
+    the child's own `except Exception` in _daily_picks_subprocess_target
+    never fires) is detected via a liveness poll rather than by waiting out
+    the full timeout — the one new failure mode this isolation introduces
+    that in-process execution structurally cannot have.
+    """
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    proc = ctx.Process(
+        target=_daily_picks_subprocess_target,
+        args=(market, job_id, result_queue),
+        daemon=False,
+    )
+    proc.start()
+
+    deadline = time.time() + _SUBPROCESS_ISOLATION_TIMEOUT_S
+    outcome = None
+    while time.time() < deadline:
+        if not result_queue.empty():
+            outcome = result_queue.get()
+            break
+        if not proc.is_alive():
+            # Exited without ever reporting a result — most plausibly an
+            # OS-level kill (OOM or otherwise), which bypasses the child's
+            # own exception handling entirely. Break out to the exit-code
+            # branch below rather than spinning until the timeout.
+            break
+        time.sleep(1.0)
+    proc.join(timeout=10)
+
+    if outcome is not None and outcome[0] == "ok":
+        _, payload, persisted_at = outcome
+        return payload, persisted_at
+
+    if outcome is not None and outcome[0] == "error":
+        _, message, child_traceback = outcome
+        log.error(f"[picks] [{market}] subprocess generation raised: {message}\n{child_traceback}")
+        raise RuntimeError(f"[picks] [{market}] subprocess generation failed: {message}")
+
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(timeout=10)
+        raise RuntimeError(
+            f"[picks] [{market}] subprocess generation timed out after "
+            f"{_SUBPROCESS_ISOLATION_TIMEOUT_S}s with no result"
+        )
+
+    raise RuntimeError(
+        f"[picks] [{market}] subprocess generation process exited unexpectedly "
+        f"(exit code {proc.exitcode}) without reporting a result — most "
+        f"likely OS-terminated (e.g. OOM-killed)"
+    )
+
+
 def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
     """
     Learning Alpha Engine pipeline:
@@ -1496,7 +1641,13 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
     _post_success_market = None
 
     try:
-        payload, persisted_at = _generate_picks_inner(market, job_id=job_id)
+        # Cross-Run Memory Ratchet fix — see _generate_picks_isolated's own
+        # docstring. Disabled by default; when off, behavior is byte-for-
+        # byte identical to before this change.
+        if _subprocess_isolation_enabled():
+            payload, persisted_at = _generate_picks_isolated(market, job_id=job_id)
+        else:
+            payload, persisted_at = _generate_picks_inner(market, job_id=job_id)
 
         # ── Mark job terminal ─────────────────────────────────────────────────
         if use_job:
