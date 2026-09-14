@@ -59,7 +59,7 @@ def test_subprocess_isolation_disabled_by_default_uses_direct_path():
 def test_subprocess_isolation_enabled_uses_isolated_path():
     fake_payload = {"generated_at": "2026-09-14T00:00:00Z", "picks": {}}
 
-    with patch.dict("os.environ", {"DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED": "1"}, clear=True), \
+    with patch.dict("os.environ", {"DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_US": "1"}, clear=True), \
          patch.object(dp, "_generate_picks_inner") as mock_inner, \
          patch.object(dp, "_generate_picks_isolated",
                       return_value=(fake_payload, None)) as mock_isolated, \
@@ -70,12 +70,43 @@ def test_subprocess_isolation_enabled_uses_isolated_path():
     mock_inner.assert_not_called()
 
 
+def test_subprocess_isolation_is_gated_per_market_independently():
+    """The staged rollout plan (India first, US only after natural-run
+    evidence) requires the two markets' switches to be genuinely
+    independent — enabling one must never enable the other."""
+    fake_payload = {"generated_at": "2026-09-14T00:00:00Z", "picks": {}}
+
+    with patch.dict("os.environ", {"DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_IN": "1"}, clear=True), \
+         patch.object(dp, "_generate_picks_inner",
+                      return_value=(fake_payload, None)) as mock_inner, \
+         patch.object(dp, "_generate_picks_isolated",
+                      return_value=(fake_payload, None)) as mock_isolated, \
+         patch("threading.Thread"):
+        dp.generate_picks("IN", job_id=None)
+        dp.generate_picks("US", job_id=None)
+
+    mock_isolated.assert_called_once_with("IN", job_id=None)
+    mock_inner.assert_called_once_with("US", job_id=None)
+
+
 def test_subprocess_isolation_flag_rejects_non_1_values():
     """Fail-safe: only the literal "1" enables it — mirrors every other
     kill switch in this codebase, never a truthy-string trap."""
-    for value in ("true", "yes", "on", "TRUE", "", "0", "2"):
-        with patch.dict("os.environ", {"DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED": value}):
-            assert dp._subprocess_isolation_enabled() is (value == "1")
+    for market, var in (("IN", "DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_IN"),
+                         ("US", "DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_US")):
+        for value in ("true", "yes", "on", "TRUE", "", "0", "2"):
+            with patch.dict("os.environ", {var: value}):
+                assert dp._subprocess_isolation_enabled(market) is (value == "1")
+
+
+def test_subprocess_isolation_defaults_off_for_an_unknown_market():
+    """A market that resolves to neither "IN" nor "US" must never be
+    silently treated as either market's setting."""
+    with patch.dict("os.environ", {
+        "DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_IN": "1",
+        "DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_US": "1",
+    }):
+        assert dp._subprocess_isolation_enabled("CRYPTO") is False
 
 
 # ── 2. _daily_picks_subprocess_target()'s queue-put contract ───────────────

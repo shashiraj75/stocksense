@@ -1449,16 +1449,26 @@ def _compute_portfolio_allocation(
     return weights, cash_pct
 
 
-def _subprocess_isolation_enabled() -> bool:
+def _subprocess_isolation_enabled(market: str) -> bool:
     """
-    Read fresh on every call (never cached at import time) — mirrors this
-    codebase's own established kill-switch convention (e.g. the Growth/
-    Valuation Intelligence confidence-adjustment flags), specifically so
-    tests can toggle it via monkeypatch without needing a module reload.
-    Defaults OFF: this must be an explicit opt-in, same rollout posture as
+    Per-market kill switch — DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_IN /
+    _US, mirroring this codebase's own established per-market rollout
+    pattern (e.g. GROWTH_INTELLIGENCE_CONFIDENCE_ENABLED_IN/_US). The
+    rollout plan (see the design study/implementation docs) is staged —
+    India first, watched against 3 natural runs' real memory metrics,
+    before US — which a single combined flag could not express; a market
+    that resolves to neither "IN" nor "US" defaults OFF, never silently
+    treated as either market's setting.
+
+    Read fresh on every call (never cached at import time), so tests can
+    toggle it via monkeypatch without needing a module reload. Defaults
+    OFF for both markets: an explicit opt-in, same rollout posture as
     every other kill switch in this codebase.
     """
-    return os.getenv("DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED", "0") == "1"
+    suffix = {"IN": "_IN", "US": "_US"}.get(market)
+    if suffix is None:
+        return False
+    return os.getenv(f"DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED{suffix}", "0") == "1"
 
 
 # Generous relative to a normal 20-50 minute run — exists only to bound an
@@ -1518,8 +1528,9 @@ def _generate_picks_isolated(market: str, job_id: str | None = None) -> tuple[di
     2026-08-24 run-end release_memory() fix) already handle Python-object
     retention; neither can touch glibc allocator arena fragmentation, which
     is not a Python-level leak and is exactly what this fix targets. Gated
-    behind _subprocess_isolation_enabled() — disabled by default, same
-    rollout posture as every other kill switch in this codebase.
+    behind _subprocess_isolation_enabled(market) — disabled by default in
+    both markets, same rollout posture as every other kill switch in this
+    codebase.
 
     Uses "spawn", never "fork": a fresh interpreter with no inherited
     threads, open DB connections, or already-fragmented allocator arenas —
@@ -1644,7 +1655,7 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
         # Cross-Run Memory Ratchet fix — see _generate_picks_isolated's own
         # docstring. Disabled by default; when off, behavior is byte-for-
         # byte identical to before this change.
-        if _subprocess_isolation_enabled():
+        if _subprocess_isolation_enabled(market):
             payload, persisted_at = _generate_picks_isolated(market, job_id=job_id)
         else:
             payload, persisted_at = _generate_picks_inner(market, job_id=job_id)
