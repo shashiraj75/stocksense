@@ -17,12 +17,11 @@ const PALETTE = [
   "#14b8a6", "#f97316", "#a855f7", "#ef4444", "#84cc16",
 ];
 
-// Sector is the more useful default view for concentration/diversification
-// risk — "am I overweight one sector" matters more than "which single stock
-// is biggest," and a by-stock bar with 30+ slivers is unreadable anyway.
-// Falls back to by-stock when sector data isn't available yet (still
-// computing) or when there's only one distinct sector (grouping would be a
-// no-op slice covering the whole bar).
+// By Stock is the default view (2026-09-14, per explicit user request) —
+// previously defaulted to By Sector on the reasoning that concentration
+// risk matters more than single-stock weight, but the user wants their
+// actual holdings front and center by default; sector grouping remains
+// one click away, still useful for diversification review.
 export function PortfolioAllocationChart({
   stockSlices, sectorSlices, unresolvedSectorValue = 0, unresolvedSectorCount = 0, currency = "", mode, onModeChange,
 }: {
@@ -40,8 +39,9 @@ export function PortfolioAllocationChart({
   unresolvedSectorCount?: number;
   currency?: string;
   // Lifted from this component so the same toggle also drives the holdings
-  // table's grouping (portfolio/page.tsx owns the state) — null still means
-  // "follow the data" until the user explicitly clicks a toggle button.
+  // table's grouping (portfolio/page.tsx owns the state) — null means "use
+  // the default (By Stock)" until the user explicitly clicks a toggle
+  // button.
   mode: "sector" | "stock" | null;
   onModeChange: (mode: "sector" | "stock") => void;
 }) {
@@ -54,14 +54,15 @@ export function PortfolioAllocationChart({
   // structurally different from small/fast US ones: everything sat in
   // "Other" for a while, so the toggle stayed hidden and it silently fell
   // back to by-stock — the two markets should present the same UI shape
-  // (toggle + sector-first default) regardless of how much sector data has
-  // resolved so far; "Other" simply shrinks as more arrives. Crucially,
+  // (the toggle appears as soon as any real sector data exists) regardless
+  // of how much sector data has resolved so far; "Other" simply shrinks
+  // as more arrives. Crucially,
   // `sectorSlices` itself never contains an unresolved placeholder (see the
   // prop's own comment), so this can no longer be tricked into thinking
   // "still loading" is real sector data.
   const hasSectorData = withSectorValue.length > 0;
 
-  const effectiveMode = mode ?? (hasSectorData ? "sector" : "stock");
+  const effectiveMode = mode ?? "stock";
 
   if (withStockValue.length === 0) return null;
 
@@ -125,7 +126,7 @@ export function PortfolioAllocationChart({
         )}
         {hasSectorData && (
           <div className="flex items-center gap-0.5 bg-dark-bg border border-dark-border rounded-lg p-0.5 ml-auto">
-            {(["sector", "stock"] as const).map(m => (
+            {(["stock", "sector"] as const).map(m => (
               <button
                 key={m}
                 onClick={() => onModeChange(m)}
@@ -173,13 +174,8 @@ export function PortfolioAllocationChart({
 
       {/* Resolving sectors — a distinct, visually muted state, never a
           chart segment. Only relevant in sector mode: by-stock allocation
-          doesn't depend on sector data at all, so there's nothing to flag
-          there. Shown even when hasSectorData is false (nothing real has
-          resolved yet) — in that case the bar/legend above are already
-          showing By Stock (effectiveMode falls back automatically since
-          hasSectorData is false), so this reads as "still working on
-          sectors, here's your allocation by stock in the meantime" rather
-          than a stalled-looking single "Loading" bar. */}
+          (the default view) doesn't depend on sector data at all, so
+          there's nothing to flag there. */}
       {effectiveMode === "sector" && unresolvedSectorCount > 0 && (
         <p className="flex items-center gap-1.5 text-xs text-gray-500">
           <span className="w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse shrink-0" />
