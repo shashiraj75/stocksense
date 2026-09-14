@@ -1029,11 +1029,10 @@ export default function PortfolioPage() {
   // Single shared toggle for both the allocation chart's grouping and the
   // holdings table's grouping — one control, two views in sync, instead of
   // a separate "Group by Sector" button duplicating the same choice. null =
-  // "follow the data" (defaults to sector once sector data arrives, which
-  // resolves asynchronously after mount) until the user explicitly clicks.
+  // "follow the default" (By Stock, per 2026-09-14 user request) until the
+  // user explicitly clicks.
   const [allocationMode, setAllocationMode] = useState<"sector" | "stock" | null>(null);
-  const hasSectorData = sectorSlices.some(s => s.value > 0);
-  const effectiveAllocationMode = allocationMode ?? (hasSectorData ? "sector" : "stock");
+  const effectiveAllocationMode = allocationMode ?? "stock";
 
   // Gated on the selected market toggle too, not just whether holdings exist —
   // otherwise both currencies' summary cards/tables/chart show simultaneously

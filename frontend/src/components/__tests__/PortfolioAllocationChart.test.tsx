@@ -83,6 +83,7 @@ describe("PortfolioAllocationChart", () => {
         ]}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "By Sector" }));
     const legendLabels = screen
       .getAllByText(/Sector$/)
       .filter((el) => el.tagName !== "BUTTON")
@@ -162,7 +163,7 @@ describe("PortfolioAllocationChart", () => {
     expect(screen.getByText("TCS")).toBeInTheDocument();
   });
 
-  it("shows real sector slices (not a loading placeholder) once sector data exists", () => {
+  it("shows real sector slices (not a loading placeholder) once sector data exists, after switching to By Sector", () => {
     render(
       <ControlledChart
         stockSlices={[
@@ -175,6 +176,7 @@ describe("PortfolioAllocationChart", () => {
         ]}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "By Sector" }));
     expect(screen.getByText("IT")).toBeInTheDocument();
     expect(screen.getByText("Energy")).toBeInTheDocument();
   });
@@ -191,6 +193,7 @@ describe("PortfolioAllocationChart", () => {
         unresolvedSectorCount={1}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "By Sector" }));
     // Real sector still shown normally.
     expect(screen.getByText("IT")).toBeInTheDocument();
     // Unresolved state is visible and textually distinct from "Other".
@@ -198,13 +201,14 @@ describe("PortfolioAllocationChart", () => {
     expect(screen.queryByText("Other")).not.toBeInTheDocument();
   });
 
-  it("a single-sector portfolio (100% one sector) still renders the sector view correctly", () => {
+  it("a single-sector portfolio (100% one sector) still renders the sector view correctly, once By Sector is selected", () => {
     render(
       <ControlledChart
         stockSlices={[{ symbol: "TCS", value: 1000, signal: "BUY" }]}
         sectorSlices={[{ sector: "IT", value: 1000 }]}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: "By Sector" }));
     expect(screen.getByText("IT")).toBeInTheDocument();
     expect(screen.getByText("100.0%")).toBeInTheDocument();
   });
@@ -326,6 +330,32 @@ describe("PortfolioAllocationChart", () => {
     expect(screen.getByText("1 BUY")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "By Sector" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "By Stock" })).toBeInTheDocument();
+  });
+
+  // ── By Stock default + first (2026-09-14, per explicit user request) ──
+
+  it("defaults to By Stock (not By Sector) when the user hasn't chosen yet", () => {
+    render(
+      <ControlledChart
+        stockSlices={[{ symbol: "AAPL", value: 100, signal: "BUY" }]}
+        sectorSlices={[{ sector: "Technology", value: 100 }]}
+      />,
+    );
+    expect(screen.getByText("AAPL")).toBeInTheDocument();
+    expect(screen.queryByText("Technology")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "By Stock" }).className).toContain("bg-brand-500");
+    expect(screen.getByRole("button", { name: "By Sector" }).className).not.toContain("bg-brand-500");
+  });
+
+  it("renders the By Stock button before By Sector in the DOM", () => {
+    render(
+      <ControlledChart
+        stockSlices={[{ symbol: "AAPL", value: 100, signal: "BUY" }]}
+        sectorSlices={[{ sector: "Technology", value: 100 }]}
+      />,
+    );
+    const buttons = screen.getAllByRole("button", { name: /^By (Stock|Sector)$/ });
+    expect(buttons.map((b) => b.textContent)).toEqual(["By Stock", "By Sector"]);
   });
 
   it("header row uses flex-wrap (mobile-safe), not a fixed desktop-only width", () => {
