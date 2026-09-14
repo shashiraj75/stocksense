@@ -1449,6 +1449,14 @@ def _compute_portfolio_allocation(
     return weights, cash_pct
 
 
+# 2026-09-14: no-op redeploy trigger. PR #96's own deploy (commit 33fbbcee)
+# was SKIPPED by Railway because a real, coincidentally-in-flight scheduled
+# US Daily Picks run's check failed against that commit — traced to PR #95's
+# own deploy landing mid-run and restarting the container, not a defect in
+# #96's code. That run was manually retriggered and completed successfully
+# with no deploy colliding this time; this comment-only change exists
+# solely to give Railway a fresh commit to deploy with no in-flight job
+# contending for the same window.
 def _subprocess_isolation_enabled(market: str) -> bool:
     """
     Per-market kill switch — DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_IN /
