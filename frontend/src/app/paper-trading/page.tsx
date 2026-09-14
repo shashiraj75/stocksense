@@ -335,8 +335,40 @@ function OpenTradeRow({
   // conveys the same information either way.
   const shouldAnimate = marketOpen === true && !prefersReducedMotion;
 
-  // Browser popup notification — fires once per (trade, kind) per session,
-  // only while this tab is open, permission has been granted, and the
+  // In-page banner — the reliable, always-on on-screen channel. Fires once
+  // per (trade, kind) per session, regardless of notificationsEnabled or
+  // browser Notification permission (2026-09-14 fix: this used to be the
+  // ONLY on-screen path guarded behind both, and most users never
+  // explicitly grant native browser notification permission — meaning the
+  // on-screen alert effectively never appeared for them at all, even
+  // though the proximity email arrived, exactly the gap a real user
+  // report described: "we receive the email notification but the
+  // auto-triggered notifications are not shown on the screen"). Costs
+  // nothing to show and carries no email-spam risk, so it is deliberately
+  // NOT gated by the email preference — that preference now governs email
+  // only, per postgres_store.py's own updated column comment.
+  useEffect(() => {
+    if (marketOpen !== true) return;
+    if (nearTarget) {
+      const key = `${trade.id}-target-banner`;
+      if (!_notifiedThisSession.has(key)) {
+        _notifiedThisSession.add(key);
+        onNotify(`🎯 ${trade.symbol} is near your target price (${currency}${livePrice?.toLocaleString()} vs ${currency}${trade.target_price?.toLocaleString()})`, "success");
+      }
+    }
+    if (nearStopLoss) {
+      const key = `${trade.id}-stop-banner`;
+      if (!_notifiedThisSession.has(key)) {
+        _notifiedThisSession.add(key);
+        onNotify(`⚠️ ${trade.symbol} is near your stop loss (${currency}${livePrice?.toLocaleString()} vs ${currency}${trade.stop_loss?.toLocaleString()})`, "warning");
+      }
+    }
+  }, [nearTarget, nearStopLoss, trade.id, trade.symbol, livePrice, currency, trade.target_price, trade.stop_loss, marketOpen, onNotify]);
+
+  // Native OS browser popup — an opt-in bonus layer on top of the always-on
+  // banner above, for a user who wants to be alerted even while this tab
+  // isn't focused. Fires once per (trade, kind) per session, only while
+  // this tab is open, permission has been explicitly granted, and the
   // trade's own market is open (a closed-market position shouldn't imply
   // the same "act now" urgency as a live one).
   useEffect(() => {
