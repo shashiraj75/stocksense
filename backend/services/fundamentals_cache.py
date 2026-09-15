@@ -185,6 +185,86 @@ def query_screen(screen: str, market: str = "IN") -> list[dict]:
         return [dict(zip(_SELECT_COLS, row)) for row in rows]
 
 
+def query_filtered(
+    market: str = "IN",
+    sector: str | None = None,
+    min_market_cap: float | None = None,
+    max_market_cap: float | None = None,
+    max_pe: float | None = None,
+    min_roe: float | None = None,
+    min_roce: float | None = None,
+    max_debt_to_equity: float | None = None,
+    min_sales_growth_3y: float | None = None,
+    min_profit_growth_3y: float | None = None,
+    min_business_quality_score: float | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    """
+    Instant, user-adjustable multi-criteria screen against the same
+    weekly-refreshed fundamentals cache query_screen's fixed screens
+    already use — generalizes that "filter the cache, never live-scrape"
+    pattern to arbitrary caller-supplied thresholds (2026-09-15, replacing
+    api/routers/screener.py's previous ``/filter`` implementation, which
+    looped a live yf.Ticker(...).info call per symbol across the full
+    market universe on every request — slow, un-cached, and never actually
+    wired to any frontend UI).
+
+    Every filterable column is drawn from the fixed _SELECT_COLS whitelist
+    below — never string-interpolated from caller input — so this can
+    never become a SQL-injection surface regardless of what a caller
+    passes. `sector` is the only free-text value; it is always bound as a
+    parameterized ILIKE argument, never concatenated into the SQL text.
+    Market cap is compared against whichever of market_cap_cr/
+    market_cap_usd_m actually applies to `market`, mirroring
+    get_ranked_universe's own cap_col selection below.
+    """
+    cap_col = "market_cap_cr" if market == "IN" else "market_cap_usd_m"
+    clauses = ["market = %s"]
+    params: list = [market]
+
+    if sector:
+        clauses.append("sector_name ILIKE %s")
+        params.append(f"%{sector}%")
+    if min_market_cap is not None:
+        clauses.append(f"{cap_col} IS NOT NULL AND {cap_col} >= %s")
+        params.append(min_market_cap)
+    if max_market_cap is not None:
+        clauses.append(f"{cap_col} IS NOT NULL AND {cap_col} <= %s")
+        params.append(max_market_cap)
+    if max_pe is not None:
+        clauses.append("pe_ratio IS NOT NULL AND pe_ratio <= %s")
+        params.append(max_pe)
+    if min_roe is not None:
+        clauses.append("roe_pct IS NOT NULL AND roe_pct >= %s")
+        params.append(min_roe)
+    if min_roce is not None:
+        clauses.append("roce_pct IS NOT NULL AND roce_pct >= %s")
+        params.append(min_roce)
+    if max_debt_to_equity is not None:
+        clauses.append("debt_to_equity_pct IS NOT NULL AND debt_to_equity_pct <= %s")
+        params.append(max_debt_to_equity)
+    if min_sales_growth_3y is not None:
+        clauses.append("sales_growth_3y_pct IS NOT NULL AND sales_growth_3y_pct >= %s")
+        params.append(min_sales_growth_3y)
+    if min_profit_growth_3y is not None:
+        clauses.append("profit_growth_3y_pct IS NOT NULL AND profit_growth_3y_pct >= %s")
+        params.append(min_profit_growth_3y)
+    if min_business_quality_score is not None:
+        clauses.append("business_quality_score IS NOT NULL AND business_quality_score >= %s")
+        params.append(min_business_quality_score)
+
+    where = " AND ".join(clauses)
+    with _conn() as conn:
+        rows = conn.execute(f"""
+            SELECT {", ".join(_SELECT_COLS)}
+            FROM stock_fundamentals_cache
+            WHERE {where}
+            ORDER BY business_quality_score DESC NULLS LAST
+            LIMIT %s
+        """, params + [limit]).fetchall()
+        return [dict(zip(_SELECT_COLS, row)) for row in rows]
+
+
 def get_ranked_universe(market: str = "IN") -> list[tuple[str, float]]:
     """
     (symbol, market_cap) for every cached stock in this market with a known,
