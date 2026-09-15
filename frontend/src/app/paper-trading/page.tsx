@@ -14,6 +14,7 @@ import {
   fetchPaperPortfolio, closePaperTrade, resetPaperPortfolio, editPaperTrade,
   updatePaperTradeManagementMode, updatePaperTradeNotificationPreference,
   fetchQuote, type PaperTrade, type TradeManagementMode, type ClosedHistoryHorizonKey, type StockQuote,
+  type PaperPortfolio,
 } from "@/utils/api";
 import { useAuth } from "@/lib/AuthContext";
 import { PaperTradeModal } from "@/components/PaperTradeModal";
@@ -285,6 +286,58 @@ const _notifiedThisSession = new Set<string>();
 // this is just to avoid firing a redundant request in the common case).
 const _autoCloseAttempted = new Set<number>();
 
+// Guards the on-screen close banner against ever firing twice for the same
+// trade — the client-side close path below (OpenTradeRow's closeMutation)
+// and the page-level "a trade vanished from open_trades" detection (added
+// once services/paper_trade_exit_monitor.py started closing Auto Close
+// trades server-side, so this tab is very often not the one that executed
+// the close) both add to this set before pushing a banner, so whichever
+// one notices first wins and the other is a no-op. Never removed — a trade
+// closes exactly once in its lifetime.
+const _closeBannerShown = new Set<number>();
+
+// Builds the same "SYMBOL target/stop loss hit at $X (+Y%). Position
+// closed automatically." wording the client-side Auto Close path already
+// produces, from a trade record fetched *after* the close (exit_price/
+// realized_pnl/exit_reason already populated) instead of a live quote —
+// used when this tab discovers a trade closed without this tab having
+// executed the close itself (2026-09-15 user report: "we used to get
+// notifications on top of the screen" — regressed by
+// paper_trade_exit_monitor.py moving Auto Close execution server-side,
+// see that module's own docstring for why that move was correct).
+// Searches both markets' "latest 5 per horizon bucket" closed-trade window
+// for a specific trade id — the only place a just-closed trade's
+// exit_price/realized_pnl/exit_reason are available client-side, since the
+// modern page never fetches the full closed_trades list (see PaperPortfolio
+// above). A trade closed more than 5-per-bucket poll cycles ago falls
+// outside this window and simply won't be found — acceptable, since this
+// is only ever called for a trade that JUST disappeared from open_trades
+// on the most recent poll.
+export function findClosedTradeById(portfolio: PaperPortfolio, id: number): PaperTrade | null {
+  for (const mkt of ["IN", "US"] as const) {
+    const byHorizon = portfolio.closed_trade_history_by_horizon[mkt];
+    for (const bucket of Object.values(byHorizon)) {
+      const found = bucket?.latest_trades.find(t => t.id === id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+export function buildServerCloseMessage(trade: PaperTrade, currency: string): { message: string; tone: "success" | "warning" } | null {
+  if (trade.exit_reason !== "STOP_LOSS" && trade.exit_reason !== "TARGET_HIT") return null;
+  const isTarget = trade.exit_reason === "TARGET_HIT";
+  const triggerFragment = formatTriggerFragment(currency, trade.exit_price, trade.entry_price);
+  const symbolPrefix = trade.symbol ? `${trade.symbol} ` : "";
+  const actionPhrase = `${isTarget ? "target achieved" : "stop loss hit"}${triggerFragment}. Position closed automatically.`;
+  return {
+    message: symbolPrefix
+      ? `${symbolPrefix}${actionPhrase}`
+      : `${actionPhrase.charAt(0).toUpperCase()}${actionPhrase.slice(1)}`,
+    tone: isTarget ? "success" : "warning",
+  };
+}
+
 function OpenTradeRow({
   trade, quote, marketOpen, prefersReducedMotion, onSell, userId, onNotify, notificationsEnabled,
 }: {
@@ -467,6 +520,7 @@ function OpenTradeRow({
       closePaperTrade(trade.id, userId, livePrice!, exitReason),
     onSuccess: (_data, exitReason) => {
       queryClient.invalidateQueries({ queryKey: ["paper-portfolio"] });
+      _closeBannerShown.add(trade.id);
       const isAuto = trade.trade_management_mode === "auto";
       const isTarget = exitReason === "TARGET_HIT";
       // Falls back to a symbol-only message automatically when livePrice is
@@ -873,6 +927,37 @@ export default function PaperTradingPage() {
     enabled: !!userId,
     refetchInterval: 30_000,
   });
+
+  // Detects a trade that closed WITHOUT this tab having executed the close
+  // itself — the common case now that services/paper_trade_exit_monitor.py
+  // closes Auto Close trades server-side every 5 minutes, so a trade can
+  // (and very often does) go from open to closed between two 30s portfolio
+  // polls with no client-side mutation in this tab at all. Diffs this
+  // poll's open_trades against the previous one; any id that dropped out
+  // is looked up in the just-refreshed closed-trade history to build the
+  // same on-screen banner a client-triggered close already shows (2026-09
+  // user report: "we used to get notifications on top of the screen" —
+  // email notifications kept working throughout, since trade_notifier.py
+  // is driven by DB state, not this tab).
+  const prevOpenTradeIdsRef = useRef<Set<number> | null>(null);
+  useEffect(() => {
+    if (!portfolio) return;
+    const currentIds = new Set(portfolio.open_trades.map(t => t.id));
+    const prevIds = prevOpenTradeIdsRef.current;
+    if (prevIds) {
+      for (const id of prevIds) {
+        if (currentIds.has(id) || _closeBannerShown.has(id)) continue;
+        const closedTrade = findClosedTradeById(portfolio, id);
+        if (!closedTrade) continue; // outside the latest-5-per-bucket window this poll — rare, skip rather than guess
+        _closeBannerShown.add(id);
+        const currency = MARKETS.find(m => m.key === closedTrade.market)?.currency ?? "";
+        const banner = buildServerCloseMessage(closedTrade, currency);
+        if (banner) pushNotification(banner.message, banner.tone);
+      }
+    }
+    prevOpenTradeIdsRef.current = currentIds;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [portfolio]);
 
   const resetMutation = useMutation({
     mutationFn: () => resetPaperPortfolio(userId, market),
