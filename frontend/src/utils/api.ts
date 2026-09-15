@@ -516,7 +516,7 @@ export interface IndexQuote {
   change_pts: number | null;
 }
 
-export const fetchIndices = (market: Market | "CRYPTO") =>
+export const fetchIndices = (market: Market | "CRYPTO" | "COMMODITIES") =>
   api.get<{ indices: IndexQuote[] }>("/api/stocks/indices", { params: { market } }).then((r) => r.data);
 
 export const fetchFactorAttribution = (symbol: string, market: Market, horizon: Horizon) =>
