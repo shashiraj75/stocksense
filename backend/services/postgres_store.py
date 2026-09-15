@@ -1006,6 +1006,21 @@ CREATE TABLE IF NOT EXISTS watchlist (
 );
 CREATE INDEX IF NOT EXISTS idx_watchlist_user ON watchlist(user_id);
 
+-- Per-user saved Screener filter sets (2026-09-15) — same shape/pattern as
+-- watchlist above (Postgres-primary, JSON-file fallback in
+-- api/routers/screener.py). `filters` stores a SavedScreenFilters payload
+-- as-is; the API layer, not this schema, is responsible for validating its
+-- shape on write and tolerating an older/newer shape on read.
+CREATE TABLE IF NOT EXISTS saved_screens (
+    id         BIGSERIAL PRIMARY KEY,
+    user_id    TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    market     TEXT NOT NULL,
+    filters    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_saved_screens_user ON saved_screens(user_id);
+
 CREATE TABLE IF NOT EXISTS terms_acceptance (
     id            BIGSERIAL PRIMARY KEY,
     user_id       TEXT NOT NULL,

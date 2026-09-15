@@ -2,7 +2,6 @@ import math
 import time
 import logging
 import yfinance as yf
-from typing import Optional
 
 log = logging.getLogger(__name__)
 
@@ -364,58 +363,3 @@ class ScreenerService:
             except Exception:
                 pass
         return response
-
-    async def filter_stocks(
-        self,
-        market: str,
-        min_market_cap: Optional[float],
-        max_pe: Optional[float],
-        min_roe: Optional[float],
-        sector: Optional[str],
-        signal: Optional[str],
-    ) -> dict:
-        import asyncio
-        universe = US_UNIVERSE if market == "US" else IN_UNIVERSE
-
-        def _run_filter():
-            results = []
-            skipped = 0
-            for sym in universe:
-                try:
-                    info = yf.Ticker(sym).info
-                    pe   = info.get("trailingPE")
-                    roe  = info.get("returnOnEquity")  # yfinance returns this as a fraction (0.15 = 15%)
-                    mcap = info.get("marketCap") or 0
-                    sec  = info.get("sector", "")
-                    passes = True
-                    if min_market_cap is not None and mcap < min_market_cap:
-                        passes = False
-                    if max_pe is not None and pe is not None and pe > max_pe:
-                        passes = False
-                    # min_roe is documented/expected as a percentage (e.g. 15 for "15%"),
-                    # matching the *100-scaled `roe` field returned below — compare on
-                    # the same scale instead of against the raw fraction.
-                    if min_roe is not None and (roe is None or roe * 100 < min_roe):
-                        passes = False
-                    if sector and sector.lower() not in sec.lower():
-                        passes = False
-                    if passes:
-                        results.append({
-                            "symbol":     sym.replace(".NS", "").replace(".BO", ""),
-                            "sector":     sec,
-                            "pe":         round(pe, 2) if pe is not None else None,
-                            "roe":        round(roe * 100, 2) if roe is not None else None,
-                            "market_cap": mcap,
-                        })
-                except Exception as e:
-                    skipped += 1
-                    log.debug("screener filter: skipped %s (%s)", sym, e)
-            if skipped:
-                log.info("screener filter: %d/%d symbols failed to fetch and were skipped", skipped, len(universe))
-            return results
-
-        loop = asyncio.get_running_loop()
-        results = await asyncio.wait_for(
-            loop.run_in_executor(None, _run_filter), timeout=60.0
-        )
-        return {"market": market, "results": results}
