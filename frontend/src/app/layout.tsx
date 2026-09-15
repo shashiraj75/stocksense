@@ -26,17 +26,35 @@ export const viewport: Viewport = {
   maximumScale: 1,
 };
 
+// 2026-09-15 reorder (user-requested nav-UX review) — grouped by what a
+// user is actually trying to do, instead of the prior growth-order
+// sequence (items landed wherever they were when each feature shipped,
+// with no grouping logic). Three groups, left to right:
+//   1. Discovery/research  — Daily Picks (kept first: the flagship,
+//      already visually emphasized via `accent`), Dashboard (a page whose
+//      own <h1> is "Market Overview" — a discovery/overview page, not a
+//      personal one, confirmed by reading dashboard/page.tsx directly, so
+//      it belongs here, not floating in the middle of the personal group
+//      it was previously sandwiched into), Multibagger, Screener, Heatmap.
+//   2. Personal tracking — Watchlist and Alerts are already a natural
+//      pair (things you're monitoring); Portfolio and Paper Trade are
+//      also a natural pair (your real vs. simulated holdings) — grouped
+//      together now instead of split apart by four unrelated items.
+//   3. Trust/evidence — Validation (Model Validation's own <h1>,
+//      confirmed by reading validation/page.tsx) is a track-record/proof
+//      page, not a daily workflow tool — moved from the middle of the
+//      personal-tracking group to the end, its own natural place.
 export const NAV_LINKS = [
   { href: "/picks",      label: "Daily Picks", accent: true },
-  { href: "/multibagger", label: "Multibagger", color: "text-purple-400 hover:text-purple-300" },
   { href: "/dashboard",  label: "Dashboard" },
-  { href: "/heatmap",    label: "Heatmap" },
+  { href: "/multibagger", label: "Multibagger", color: "text-purple-400 hover:text-purple-300" },
   { href: "/screener",   label: "Screener" },
-  { href: "/portfolio",  label: "Portfolio" },
-  { href: "/alerts",     label: "Alerts" },
+  { href: "/heatmap",    label: "Heatmap" },
   { href: "/watchlist",  label: "Watchlist" },
-  { href: "/validation",    label: "Validation" },
+  { href: "/alerts",     label: "Alerts" },
+  { href: "/portfolio",  label: "Portfolio" },
   { href: "/paper-trading", label: "Paper Trade" },
+  { href: "/validation",    label: "Validation" },
   // PR #32 pre-merge correction: dormant by default — only shown once
   // NEXT_PUBLIC_TRADE_POSTMORTEM_DAILY_ENABLED is explicitly enabled at
   // build time. See src/utils/featureFlags.ts for the fail-safe parsing.
