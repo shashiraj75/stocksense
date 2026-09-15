@@ -107,6 +107,12 @@ INDICES = {
     "IN":     [("^NSEI", "NIFTY 50"), ("^BSESN", "SENSEX")],
     "US":     [("^GSPC", "S&P 500"), ("^IXIC", "NASDAQ"), ("^DJI", "DOW")],
     "CRYPTO": [("BTC-USD", "Bitcoin")],
+    # Futures contracts, quoted the same units their name implies — GC=F/SI=F
+    # are USD per troy ounce, BZ=F is USD per barrel. Same yfinance
+    # tickers services/global_context.py already uses for prediction-engine
+    # macro context (GLOBAL_TICKERS) — reused here, not re-picked, for the
+    # ticker ribbon's own "Coming soon" Commodities context.
+    "COMMODITIES": [("GC=F", "Gold (oz)"), ("SI=F", "Silver (oz)"), ("BZ=F", "Brent Crude")],
 }
 
 def _fetch_index(ticker_sym: str, name: str) -> dict:
@@ -250,7 +256,7 @@ async def get_score_history(
 
 
 @router.get("/indices")
-async def get_indices(market: Literal["US", "IN", "CRYPTO"] = Query("IN")):
+async def get_indices(market: Literal["US", "IN", "CRYPTO", "COMMODITIES"] = Query("IN")):
     cached = _index_cache.get(market)
     if cached and (time.time() - cached[0]) < _INDEX_TTL:
         return cached[1]

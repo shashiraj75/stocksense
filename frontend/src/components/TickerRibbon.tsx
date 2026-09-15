@@ -30,11 +30,18 @@ export function TickerRibbon() {
     staleTime: 10_000,
     refetchInterval: 15_000,
   });
+  const commoditiesQuery = useQuery({
+    queryKey: ["indices", "COMMODITIES"],
+    queryFn: () => fetchIndices("COMMODITIES"),
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  });
 
   const allIndices = [
     ...(inQuery.data?.indices ?? []),
     ...(usQuery.data?.indices ?? []),
     ...(cryptoQuery.data?.indices ?? []),
+    ...(commoditiesQuery.data?.indices ?? []),
   ].filter((idx) => idx.price != null);
 
   if (allIndices.length === 0) return null;
