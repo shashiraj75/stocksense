@@ -80,7 +80,13 @@ export function GlobalMarketDropdown() {
       {open && (
         <div
           role="listbox"
-          className="absolute right-0 top-full mt-2 w-48 bg-dark-card border border-dark-border rounded-xl shadow-xl overflow-hidden z-50"
+          // left-anchored on mobile: this button is the leftmost item in a
+          // right-aligned header cluster (see layout.tsx), so a right-0
+          // panel here extends leftward off the viewport edge, clipping
+          // every option's text (2026-09-15 user report from an Android
+          // screenshot: "India"/"Crypto"/"Commodities" all cut off on the
+          // left). sm+ keeps right-0 since desktop has room on both sides.
+          className="absolute left-0 sm:left-auto sm:right-0 top-full mt-2 w-48 max-w-[calc(100vw-1.5rem)] bg-dark-card border border-dark-border rounded-xl shadow-xl overflow-hidden z-50"
         >
           {GLOBAL_MARKET_CONTEXTS.map(({ key, emoji, label }) => {
             const isActive = key === context;
@@ -100,11 +106,11 @@ export function GlobalMarketDropdown() {
                   isActive ? "font-semibold text-white bg-white/5" : "text-gray-300"
                 )}
               >
-                <span className="flex items-center gap-2">
+                <span className="flex items-center gap-2 flex-wrap min-w-0">
                   <span>{emoji}</span>
                   <span>{label}</span>
                   {!supported && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-dark-border/60 text-gray-500">Coming soon</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-dark-border/60 text-gray-500 whitespace-nowrap">Coming soon</span>
                   )}
                 </span>
                 {isActive && <Check size={14} className="text-brand-400 shrink-0" />}
