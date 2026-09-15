@@ -116,6 +116,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
           </nav>
           <main className="max-w-7xl mx-auto px-3 sm:px-4 py-4 sm:py-6">{children}</main>
+          {/* Copyright notice — the public landing page (app/page.tsx)
+              already showed this; the authenticated app (every page behind
+              this layout — Daily Picks, Dashboard, Portfolio, etc.) had no
+              footer at all, so it never appeared for a logged-in user
+              (2026-09-15 user request: "show the copyright signs on the
+              page"). Same wording/dynamic year as the landing page, for
+              consistency. */}
+          <footer className="border-t border-dark-border py-4 text-center text-xs text-gray-500">
+            © {new Date().getFullYear()} StockSense360
+          </footer>
         </Providers>
       </body>
     </html>
