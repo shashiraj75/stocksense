@@ -1381,9 +1381,6 @@ export default function DailyPicksPage() {
         <div className="flex items-center gap-3 min-w-0">
           <TrendingUp size={24} className="text-green-400 shrink-0" />
           <h1 className="text-2xl font-bold">Daily Stock Picks</h1>
-          <span className="text-xs bg-green-500/15 text-green-400 border border-green-500/30 px-2 py-0.5 rounded-full font-semibold shrink-0">
-            {marketCfg.label}
-          </span>
         </div>
         <div className="flex items-center gap-2 shrink-0 ml-auto flex-wrap justify-end">
           {/* Original opt-in "Real Accuracy" control — withheld while
