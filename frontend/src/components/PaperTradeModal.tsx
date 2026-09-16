@@ -96,6 +96,25 @@ export function PaperTradeModal({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  // Locks background page scroll while this modal is open. Without this,
+  // the page behind the fixed/centered overlay can still receive a touch
+  // scroll on mobile — the page itself scrolls (or the drag gets split
+  // unpredictably between the page and the modal's own internal
+  // overflow-y-auto body) instead of just the modal's content, so the
+  // sticky Buy/Cancel footer can end up below the fold with no visible way
+  // to reach it until the user happens to scroll the page too (2026-09-16
+  // user report, reproduced on a taller US-stock modal — the extra "Using
+  // latest market price" notice pushed total content height past the
+  // viewport, exposing this; a shorter modal for a different stock simply
+  // never triggered it). Restores whatever overflow value body had before
+  // this modal mounted, not an unconditional "" — a page that had its own
+  // reason to set body overflow must get that back, not lose it.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
+
   // Block order placement while the relevant market is closed — executing
   // instantly at a stale last-close price would be unrealistic (real
   // markets can gap on the next open) and looks unprofessional.

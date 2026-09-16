@@ -50,6 +50,18 @@ export function StockSymbolField({
         className={className}
         placeholder={placeholder}
         value={value}
+        // The browser's own native autofill/saved-form-value dropdown (not
+        // this component's own <ul> below) competes with it on mobile —
+        // rendered by the browser itself, so it ignores our z-index and can
+        // paint over the sticky nav or other content, with none of the
+        // flag/company-name styling below (plain previously-typed values
+        // only). 2026-09-16 user report, reproduced on Portfolio's Add
+        // Holding field: a browser autofill list of past symbols (IFBIND,
+        // IFCI, WIPRO, ONGC) rendered on top of the header, cutting off the
+        // page underneath. This field already has its own matching
+        // autocomplete dropdown — the browser's competing one is never
+        // wanted here.
+        autoComplete="off"
         onChange={e => {
           const v = e.target.value.toUpperCase();
           onChange(v);
