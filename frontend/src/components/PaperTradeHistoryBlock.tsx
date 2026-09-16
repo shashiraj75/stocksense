@@ -346,7 +346,12 @@ export function ClosedTradeHorizonBlock({
                                 "font-mono font-normal normal-case",
                                 groupNetPnl > 0 ? "text-bull" : groupNetPnl < 0 ? "text-bear" : "text-gray-500",
                               )}>
-                                Net {groupNetPnl >= 0 ? "+" : ""}{currency}{fmt(Math.abs(groupNetPnl), 0)}
+                                {/* U+2212, not the ASCII hyphen toFixed() would give — matches
+                                    this file's own trigger-fragment convention. A losing month
+                                    relied on red color alone otherwise, which a colorblind user
+                                    (or plain misreading red-as-a-different-shade) can't rely on
+                                    — 2026-09-16 user report. */}
+                                Net {groupNetPnl > 0 ? "+" : groupNetPnl < 0 ? "−" : ""}{currency}{fmt(Math.abs(groupNetPnl), 0)}
                               </span>
                             </div>
                           </td>

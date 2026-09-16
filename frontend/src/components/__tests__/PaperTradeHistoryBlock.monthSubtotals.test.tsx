@@ -70,6 +70,28 @@ describe("ClosedTradeHorizonBlock — per-month subtotals", () => {
     expect(screen.getByText("Net +$20")).toBeInTheDocument();
   });
 
+  it("shows a losing month's Net P&L with an explicit minus sign, not just red color", () => {
+    const loss1 = makeTrade({ id: 10, realized_pnl: -100, exit_reason: "STOP_LOSS", closed_at: "2026-07-01T10:00:00Z" });
+    const loss2 = makeTrade({ id: 11, realized_pnl: -50, exit_reason: "STOP_LOSS", closed_at: "2026-07-02T10:00:00Z" });
+    const bucket: ClosedTradeHorizonBucket = {
+      summary: BUCKET.summary,
+      latest_trades: [loss1, loss2],
+      earlier_trade_count: 0,
+    };
+    render(
+      <table>
+        <tbody>
+          <ClosedTradeHorizonBlock
+            market="US" horizon="short" label="Short" sub="" accent="text-brand-500"
+            bucket={bucket} currency="$" blockExpanded onToggleBlock={() => {}}
+          />
+        </tbody>
+      </table>
+    );
+    expect(screen.getByText("Win 0/2")).toBeInTheDocument();
+    expect(screen.getByText("Net −$150")).toBeInTheDocument();
+  });
+
   it("does not show a month subtotal when grouping is off", () => {
     renderBlock();
     expect(screen.queryByText("Win 1/2")).toBeInTheDocument(); // sanity: month mode is the default
