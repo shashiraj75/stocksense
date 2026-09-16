@@ -1893,12 +1893,32 @@ def get_pnl_by_period(
     list of periods that actually had activity, not a dense calendar) —
     the frontend is responsible for any zero-filling it wants for chart
     continuity.
+
+    2026-09-16 fix: `closed_at` is TIMESTAMPTZ, so a bare `date_trunc(...)`
+    truncates in the DB session's own timezone setting — not necessarily
+    UTC — while every other month/period boundary in this app (the Trade
+    History "Group by: Month" sections in PaperTradeHistoryBlock.tsx,
+    groupClosedTradesByMonth) is explicitly computed in UTC from the same
+    `closed_at` value. A trade closing within the session timezone's UTC
+    offset of a month boundary could land in a different month here than
+    in Trade History's own grouping, producing exactly the kind of
+    trade-count/total mismatch between "Group by: Month" and this P&L by
+    Period summary a user reported (August: 19 trades summed across two
+    horizon groups vs. 26 in this endpoint's August bucket). `AT TIME ZONE
+    'UTC'` pins the truncation to UTC regardless of session timezone,
+    matching the frontend's own boundary exactly. The trailing `AT TIME
+    ZONE 'UTC'` converts the truncated value back to a `timestamptz`
+    (the first conversion, needed for the truncation itself, yields a
+    naive `timestamp` — casting it back keeps `period_start`'s wire type
+    and psycopg deserialization identical to before this fix, so
+    formatPeriodLabel's `new Date(isoStart)` still gets an explicit-offset
+    ISO string, not a naive one a browser would parse as local time).
     """
     trunc = _PNL_PERIOD_SQL_TRUNC[period]
     with _conn() as conn:
         rows = conn.execute(
             f"""
-            SELECT market, date_trunc('{trunc}', closed_at) AS period_start,
+            SELECT market, date_trunc('{trunc}', closed_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS period_start,
                    COUNT(*) AS trade_count,
                    COALESCE(SUM((exit_price - entry_price) * quantity), 0) AS realized_pnl
             FROM paper_trades

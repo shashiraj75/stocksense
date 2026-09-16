@@ -123,6 +123,48 @@ def test_zero_closed_trades_returns_an_empty_bucket_list(client, monkeypatch):
     assert res.json()["buckets"] == []
 
 
+def test_truncation_is_pinned_to_utc_not_the_db_session_timezone(client, monkeypatch):
+    """
+    2026-09-16 fix — `closed_at` is TIMESTAMPTZ; a bare `date_trunc(...)`
+    truncates in whatever timezone the DB session happens to be in, not
+    necessarily UTC. Every other month/period boundary in this app (Trade
+    History's "Group by: Month", computed client-side from the same
+    closed_at field) is explicitly UTC — a session timezone other than UTC
+    could put a trade near a boundary in a different period here than in
+    that view, producing a mismatched trade count/total between the two
+    (the user-reported symptom: August's per-horizon groups summed to 19
+    trades, this endpoint's August bucket showed 26). Asserts the actual
+    SQL text pins the truncation with `AT TIME ZONE 'UTC'` rather than
+    relying on (and only indirectly testing) the session's own default.
+    """
+    import api.routers.paper_trading as pt
+
+    captured_sql = {}
+
+    def _fake_conn():
+        conn = MagicMock()
+        conn.__enter__.return_value = conn
+        conn.__exit__.return_value = False
+
+        def _execute(sql, params=None):
+            captured_sql["sql"] = sql
+            result = MagicMock()
+            result.fetchall.return_value = []
+            return result
+        conn.execute.side_effect = _execute
+        return conn
+
+    monkeypatch.setattr(pt, "_conn", _fake_conn)
+
+    client.get("/api/paper-trading/pnl-by-period", params={"period": "month"})
+    sql = captured_sql["sql"]
+    assert "AT TIME ZONE 'UTC'" in sql
+    # Truncated in UTC, then cast back to timestamptz — not left as a naive
+    # timestamp, which would change how the frontend parses period_start
+    # (see the endpoint's own docstring for why that matters).
+    assert sql.count("AT TIME ZONE 'UTC'") == 2
+
+
 def test_requires_authentication():
     from api.main import app
     client = TestClient(app)  # no dependency override — real auth path
