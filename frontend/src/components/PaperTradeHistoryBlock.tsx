@@ -314,22 +314,47 @@ export function ClosedTradeHorizonBlock({
                     {olderVisible && olderTrades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
                   </>
                 ) : (
-                  groupedTrades.map(group => (
-                    <React.Fragment key={group.key}>
-                      <tr className="bg-white/[0.03]">
-                        <td
-                          colSpan={isTradePostmortemPricePathEnabled() ? 8 : 7}
-                          className="px-4 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide"
-                        >
-                          {group.label}
-                          <span className="ml-2 font-normal normal-case text-gray-600">
-                            ({group.trades.length} trade{group.trades.length === 1 ? "" : "s"})
-                          </span>
-                        </td>
-                      </tr>
-                      {group.trades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
-                    </React.Fragment>
-                  ))
+                  groupedTrades.map(group => {
+                    // Subtotal for this group only — computed from exactly
+                    // the trades rendered under this header (never a
+                    // separate fetch), so it's always consistent with what's
+                    // visible even while more "earlier" pages are still
+                    // loading. Same Win Rate definition as the block-level
+                    // header above: realized P&L > 0 is a win, exactly 0 is
+                    // not (see that header's own comment) — never
+                    // recomputed with a different rule here.
+                    const groupWinTrades = group.trades.filter(t => (t.realized_pnl ?? 0) > 0).length;
+                    const groupNetPnl = group.trades.reduce((s, t) => s + (t.realized_pnl ?? 0), 0);
+                    return (
+                      <React.Fragment key={group.key}>
+                        <tr className="bg-white/[0.03]">
+                          <td
+                            colSpan={isTradePostmortemPricePathEnabled() ? 8 : 7}
+                            className="px-4 py-1.5 text-[11px] font-semibold text-gray-400 uppercase tracking-wide"
+                          >
+                            <div className="flex items-center flex-wrap gap-x-3 gap-y-0.5">
+                              <span>
+                                {group.label}
+                                <span className="ml-2 font-normal normal-case text-gray-600">
+                                  ({group.trades.length} trade{group.trades.length === 1 ? "" : "s"})
+                                </span>
+                              </span>
+                              <span className="font-normal normal-case text-gray-500">
+                                Win {groupWinTrades}/{group.trades.length}
+                              </span>
+                              <span className={clsx(
+                                "font-mono font-normal normal-case",
+                                groupNetPnl > 0 ? "text-bull" : groupNetPnl < 0 ? "text-bear" : "text-gray-500",
+                              )}>
+                                Net {groupNetPnl >= 0 ? "+" : ""}{currency}{fmt(Math.abs(groupNetPnl), 0)}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        {group.trades.map(t => <ClosedTradeRow key={t.id} trade={t} />)}
+                      </React.Fragment>
+                    );
+                  })
                 )}
               </tbody>
             </table>
