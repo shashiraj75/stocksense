@@ -35,7 +35,8 @@ export const viewport: Viewport = {
 //      own <h1> is "Market Overview" — a discovery/overview page, not a
 //      personal one, confirmed by reading dashboard/page.tsx directly, so
 //      it belongs here, not floating in the middle of the personal group
-//      it was previously sandwiched into), Multibagger, Screener, Heatmap.
+//      it was previously sandwiched into), Multibagger, Screener, Heatmap,
+//      Indices.
 //   2. Personal tracking — Watchlist and Alerts are already a natural
 //      pair (things you're monitoring); Portfolio and Paper Trade are
 //      also a natural pair (your real vs. simulated holdings) — grouped
@@ -50,6 +51,7 @@ export const NAV_LINKS = [
   { href: "/multibagger", label: "Multibagger", color: "text-purple-400 hover:text-purple-300" },
   { href: "/screener",   label: "Screener" },
   { href: "/heatmap",    label: "Heatmap" },
+  { href: "/indices",    label: "Indices" },
   { href: "/watchlist",  label: "Watchlist" },
   { href: "/alerts",     label: "Alerts" },
   { href: "/portfolio",  label: "Portfolio" },
