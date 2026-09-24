@@ -471,8 +471,8 @@ def assert_reconciles(stage: str, fetched: int, included: int, excluded: int) ->
 # THE FIXED AUDIT PRICE-DATA CUTOFF.
 #
 # Frozen deliberately as a module constant and NOT as a CLI argument: see
-# section 7. It matches the instant at which the 2026-09-10 frozen 78-run /
-# 23,888-row short-horizon population extract was taken, so population
+# section 7. It matches the instant at which the 2026-09-24 governed
+# short-horizon population extract is taken, so population
 # membership and horizon maturity are evaluated against the SAME instant and
 # no row can be in the population but judged against a different clock.
 #
@@ -481,7 +481,7 @@ def assert_reconciles(stage: str, fetched: int, included: int, excluded: int) ->
 # ADD mature rows — it can never remove one, and can never be used to drop a
 # row whose outcome has become inconvenient.
 AUDIT_PRICE_DATA_CUTOFF_UTC = _dt.datetime(
-    2026, 9, 10, 4, 8, 45, 101429, tzinfo=_dt.timezone.utc)
+    2026, 9, 24, 4, 10, 6, 975619, tzinfo=_dt.timezone.utc)
 
 # Registration provenance — asserted by the tests so the pre-registration
 # claim cannot be quietly back-dated.
