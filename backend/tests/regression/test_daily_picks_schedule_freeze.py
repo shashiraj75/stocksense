@@ -89,19 +89,15 @@ def test_india_multibagger_cron_unchanged_from_009():
 
 # ── Daily Picks Scheduler & Completion Reliability Hardening (2026-08) ────────
 
-def test_india_watchdog_cron_is_after_approved_india_worker_slot_same_days():
-    """The India recovery watchdog remains a fail-safe around the approved
-    production slot even though the primary scheduler moved from GitHub to
-    Railway. It must run strictly later than the unchanged 20:37 UTC worker
-    slot on the same Sun-Thu UTC days, never race or precede it."""
-    watchdog_crons = _crons(_load("daily_picks_in_watchdog.yml"))
-    assert len(watchdog_crons) == 1
-    minute, hour, _, _, dow = watchdog_crons[0].split()
-    worker_minute, worker_hour, _, _, worker_dow = "37 20 * * 0-4".split()
-    assert dow == worker_dow, "watchdog must run on the same days as the India worker"
-    assert int(hour) * 60 + int(minute) > int(worker_hour) * 60 + int(worker_minute), (
-        "watchdog must be scheduled strictly after the India worker slot"
-    )
+def test_india_watchdog_is_manual_only_after_worker_migration():
+    """With base generation owned by Railway, the legacy API recovery
+    watchdog must not retain an automatic GitHub schedule that could launch
+    heavy work back inside the web/API container. Keep it only as a manual
+    diagnostic/rollback surface."""
+    workflow = _load("daily_picks_in_watchdog.yml")
+    on = workflow.get(True) or workflow.get("on")
+    assert "workflow_dispatch" in on
+    assert "schedule" not in on
 
 
 def test_india_watchdog_targets_market_in():
