@@ -19,6 +19,15 @@ import os
 import sys
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+
+# Railway runs this as a file path (python scripts/run_daily_picks_worker.py).
+# In that mode Python puts backend/scripts, not backend itself, at sys.path[0].
+# Add the backend root explicitly before importing services.* so the worker is
+# independent of shell/PYTHONPATH quirks.
+_BACKEND_ROOT = str(Path(__file__).resolve().parents[1])
+if _BACKEND_ROOT not in sys.path:
+    sys.path.insert(0, _BACKEND_ROOT)
 
 from services.logging_config import configure_logging
 
