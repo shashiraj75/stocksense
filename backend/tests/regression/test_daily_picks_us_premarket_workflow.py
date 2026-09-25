@@ -15,19 +15,15 @@ _WORKFLOWS = _REPO_ROOT / ".github" / "workflows"
 
 @pytest.mark.regression
 class TestUsBaseWorkflowCronChanged:
-    def test_cron_is_the_dst_corrected_early_run(self):
-        # 2026-07-15: moved from 04:00 UTC to 06:00 UTC — 04:00 UTC during
-        # EST (UTC-5) lands at 23:00 ET the PREVIOUS calendar date, which
-        # would make every EST-season base permanently fail the premarket
-        # finalizer's same-ET-day provenance check (see
-        # daily_picks_us.yml's own comment and premarket_finalizer.py's
-        # validate_base_for_finalization() check E). 06:00 UTC lands on the
-        # correct ET calendar day in both EDT and EST, several hours before
-        # either 6:00 AM ET finalizer candidate.
+    def test_legacy_github_base_workflow_is_manual_only(self):
+        # 2026-09 dedicated-worker remediation: the unchanged 06:00 UTC
+        # production slot is now owned by the short-lived Railway worker.
+        # This legacy GitHub workflow remains only as a manual diagnostic /
+        # rollback surface and must never race the Railway cron.
         src = (_WORKFLOWS / "daily_picks_us.yml").read_text()
-        assert 'cron: "0 6 * * 1-5"' in src
-        assert 'cron: "0 4 * * 1-5"' not in src  # superseded 2026-07-15
-        assert 'cron: "17 12 * * 1-5"' not in src
+        assert "workflow_dispatch:" in src
+        assert "schedule:" not in src
+        assert 'cron: "0 6 * * 1-5"' not in src
 
     def test_still_calls_generate_endpoint_for_us(self):
         src = (_WORKFLOWS / "daily_picks_us.yml").read_text()
@@ -44,11 +40,14 @@ class TestUsBaseWorkflowCronChanged:
 
 @pytest.mark.regression
 class TestIndiaWorkflowUntouched:
-    def test_cron_unchanged(self):
-        # Product Integrity #013 (2026-07-16): deliberately moved to
-        # 20:37 UTC (2:07 AM IST) by explicit user request.
+    def test_legacy_github_base_workflow_is_manual_only(self):
+        # The approved 20:37 UTC / 02:07 IST production slot is unchanged,
+        # but is now owned by the dedicated Railway worker. GitHub must not
+        # retain a competing automatic base-generation schedule.
         src = (_WORKFLOWS / "daily_picks_in.yml").read_text()
-        assert 'cron: "37 20 * * 0-4"' in src
+        assert "workflow_dispatch:" in src
+        assert "schedule:" not in src
+        assert 'cron: "37 20 * * 0-4"' not in src
 
     def test_still_calls_generate_endpoint_for_in(self):
         src = (_WORKFLOWS / "daily_picks_in.yml").read_text()
