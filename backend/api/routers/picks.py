@@ -16,6 +16,17 @@ _HEARTBEAT_SLOW_SECS = 90
 _HEARTBEAT_UNRESPONSIVE_SECS = 180
 
 
+
+def _external_worker_only() -> bool:
+    """When enabled, heavy base generation must run only in the dedicated
+    short-lived Railway cron workers.  The API remains read/status/finalizer
+    capable but refuses to allocate Daily Picks' heavy workload inside the
+    long-running web container."""
+    return os.getenv("DAILY_PICKS_EXTERNAL_WORKER_ONLY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _norm_market(market: str) -> str:
     m = (market or "IN").upper()
     if m not in _VALID_MARKETS:
@@ -321,6 +332,20 @@ def trigger_generation(background_tasks: BackgroundTasks, market: str = "IN", x_
     if x_secret != PICKS_SECRET:
         raise HTTPException(status_code=401, detail="Invalid secret")
     market = _norm_market(market)
+
+    # Dedicated-worker architecture: production base generation belongs in
+    # short-lived Railway cron containers, never the long-running API
+    # container.  Keep this endpoint for rollback/backward compatibility,
+    # but fail closed when the production migration flag is enabled.
+    if _external_worker_only():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "external_worker_only",
+                "market": market,
+                "message": "Heavy Daily Picks generation is assigned to the dedicated scheduled worker.",
+            },
+        )
 
     # Step 1: Require durable Postgres state — no legacy in-memory fallback in production
     if os.getenv("USE_POSTGRES") != "1":
