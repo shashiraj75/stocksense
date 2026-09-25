@@ -2815,6 +2815,16 @@ def attempt_governed_recovery(market: str, reason: str) -> dict:
 
     Returns a dict describing exactly what happened — never raises.
     """
+    # Once production is migrated to dedicated short-lived Railway workers,
+    # recovery must not recreate the original failure mode by launching the
+    # same heavy pipeline inside the long-running API container.  The next
+    # scheduled worker run is the safe recovery boundary; operators can also
+    # run the worker service explicitly if an off-schedule retry is required.
+    if os.getenv("DAILY_PICKS_EXTERNAL_WORKER_ONLY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        return {"triggered": False, "reason": "external_worker_only"}
+
     if os.getenv("USE_POSTGRES") != "1":
         return {"triggered": False, "reason": "durable_job_state_unavailable"}
 
