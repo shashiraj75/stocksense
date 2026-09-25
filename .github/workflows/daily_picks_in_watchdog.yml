@@ -37,8 +37,10 @@ name: Daily Stock Picks — India Recovery Watchdog
 # primary trigger).
 
 on:
-  schedule:
-    - cron: "37 22 * * 0-4"
+  # Dedicated Railway cron workers now own both execution and failure
+  # visibility.  Keeping this old HTTP recovery watchdog scheduled would
+  # either duplicate work or push a heavy retry back into the API container.
+  # Retain manual dispatch only for diagnostics during rollback.
   workflow_dispatch:
 
 jobs:

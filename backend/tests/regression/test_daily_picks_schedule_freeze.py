@@ -1,14 +1,18 @@
 """
-Product Integrity #010 §6 — Daily Picks and Premarket Finalizer schedules
-are explicitly frozen by this release. This test reads the actual workflow
-YAML files (not a copy of the values) and fails if any of these crons ever
-drift, intentionally or accidentally, as part of Multibagger-scoped work.
+Daily Picks scheduling contract regression tests.
 
-Product Integrity #013 (2026-07-16): the India Daily Picks cron itself was
-deliberately moved (20:37 UTC / 2:07 AM IST) by explicit user request, not
-Multibagger-scoped drift — this is exactly the kind of change this freeze
-is meant to require deliberate updating for, not prevent outright. The
-assertion below was updated to match; everything else remains frozen.
+2026-09 dedicated-worker remediation: heavy IN/US base generation moved
+from GitHub Actions cron into short-lived Railway cron workers so it no
+longer shares the long-running API container's memory cgroup. The legacy
+GitHub base-generation workflows intentionally remain present only as
+manual diagnostic/rollback surfaces and therefore MUST NOT contain a
+schedule block.
+
+The approved production schedule instants themselves are unchanged:
+IN 20:37 UTC Sun-Thu (02:07 IST Mon-Fri), US 06:00 UTC Mon-Fri. Those
+instants are now enforced at Railway configuration/rollout verification
+rather than by these GitHub workflow files. The separate US premarket
+finalizer remains GitHub-scheduled and stays frozen here.
 """
 import os
 import yaml
@@ -28,12 +32,18 @@ def _crons(workflow):
     return [entry["cron"] for entry in on["schedule"]]
 
 
-def test_india_daily_picks_cron_unchanged():
-    assert _crons(_load("daily_picks_in.yml")) == ["37 20 * * 0-4"]
+def test_india_base_workflow_is_manual_only_after_worker_migration():
+    workflow = _load("daily_picks_in.yml")
+    on = workflow.get(True) or workflow.get("on")
+    assert "workflow_dispatch" in on
+    assert "schedule" not in on
 
 
-def test_us_daily_picks_base_cron_unchanged():
-    assert _crons(_load("daily_picks_us.yml")) == ["0 6 * * 1-5"]
+def test_us_base_workflow_is_manual_only_after_worker_migration():
+    workflow = _load("daily_picks_us.yml")
+    on = workflow.get(True) or workflow.get("on")
+    assert "workflow_dispatch" in on
+    assert "schedule" not in on
 
 
 def test_us_premarket_finalizer_crons_unchanged():
@@ -79,20 +89,15 @@ def test_india_multibagger_cron_unchanged_from_009():
 
 # ── Daily Picks Scheduler & Completion Reliability Hardening (2026-08) ────────
 
-def test_india_watchdog_cron_is_after_primary_india_cron_same_days():
-    """The India recovery watchdog is a fail-safe, not a second primary
-    scheduler — it must run strictly LATER than the primary India cron
-    (20:37 UTC) on the SAME set of days (Sun-Thu UTC = Mon-Fri IST), never
-    earlier and never on different days that could make it race the
-    primary under normal conditions."""
-    watchdog_crons = _crons(_load("daily_picks_in_watchdog.yml"))
-    assert len(watchdog_crons) == 1
-    minute, hour, _, _, dow = watchdog_crons[0].split()
-    primary_minute, primary_hour, _, _, primary_dow = "37 20 * * 0-4".split()
-    assert dow == primary_dow, "watchdog must run on the same days as the primary India cron"
-    assert int(hour) * 60 + int(minute) > int(primary_hour) * 60 + int(primary_minute), (
-        "watchdog must be scheduled strictly after the primary India cron"
-    )
+def test_india_watchdog_is_manual_only_after_worker_migration():
+    """With base generation owned by Railway, the legacy API recovery
+    watchdog must not retain an automatic GitHub schedule that could launch
+    heavy work back inside the web/API container. Keep it only as a manual
+    diagnostic/rollback surface."""
+    workflow = _load("daily_picks_in_watchdog.yml")
+    on = workflow.get(True) or workflow.get("on")
+    assert "workflow_dispatch" in on
+    assert "schedule" not in on
 
 
 def test_india_watchdog_targets_market_in():
