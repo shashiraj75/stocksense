@@ -17,7 +17,6 @@ from services import nse_client
 # about. Keying by (symbol, market) keeps the two universes isolated.
 _STATIC_NAMES: dict[str, str] = {}
 def _get_static_names() -> dict[str, str]:
-    global _STATIC_NAMES
     if not _STATIC_NAMES:
         try:
             from services.stock_universe import IN_STOCKS, US_STOCKS
