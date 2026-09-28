@@ -1,9 +1,11 @@
 name: Keep Server Alive
 
+# Scheduled trigger retired (GitHub Actions cost issue #114): Railway runs the
+# API as one continuous replica (no sleep/serverless mode), so a 10-minute
+# GitHub cron was only curl-ing /health (144 runs/day). Kept as a manual
+# operator diagnostic. Do not re-add a frequent GitHub schedule; use real
+# uptime monitoring if alerting is needed.
 on:
-  schedule:
-    # Every 10 min, 24/7 — Railway doesn't sleep but this acts as a health monitor
-    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:

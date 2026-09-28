@@ -11,9 +11,21 @@ on:
       - "backend/**"
       - ".github/workflows/backend_tests.yml"
 
+# Cancel a superseded PR run when a newer commit lands on the same PR. Push
+# runs (main) get a per-SHA group, so they are never cancelled or replaced by
+# a newer pending run - every main execution stays auditable and its check
+# suite stays intact for Railway's wait-for-CI deploy gate.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Was ~66 min (6525 passed / 370 skipped, 3967s) - 93% of that was one
+    # test blocking on a 3600s subprocess timeout (fixed; see PR for #114).
+    # Expected ~5-8 min now; 45 min hard stop guards runaway jobs.
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: backend
