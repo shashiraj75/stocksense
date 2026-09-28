@@ -577,7 +577,7 @@ class TestGroupICompatibilityBaseline:
         from services.postmortem.price_path_calculator import SESSION_ATTRIBUTION_ENTRY_PARTIAL_UNKNOWN
         bars = [_raw(_D(1), 2800, 2900, 2790, 2820), _raw(_D(2), 2800, 2850, 2790, 2820),
                 _raw(_D(3), 2800, 2850, 2790, 2820), _raw(_D(4), 2800, 2850, 2790, 2820)]
-        bundle = _in_bundle(_IN_ENTRY_PARTIAL if False else dt.datetime(2026, 6, 1, 11, 0, tzinfo=IST), _IN_EXIT_INTERIOR, bars)
+        bundle = _in_bundle(dt.datetime(2026, 6, 1, 11, 0, tzinfo=IST), _IN_EXIT_INTERIOR, bars)
         obs = observe_numerical_level_crossing(bundle, 2870.0, TARGET_VALUE)
         assert obs.first_observed_session_attribution == SESSION_ATTRIBUTION_ENTRY_PARTIAL_UNKNOWN
         assert obs.first_safely_attributable_session is None

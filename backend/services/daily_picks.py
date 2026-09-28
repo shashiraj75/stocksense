@@ -1635,7 +1635,6 @@ def generate_picks(market: str = "IN", job_id: str | None = None) -> dict:
     market: "IN" (NSE, default) or "US" (NYSE/NASDAQ).
     """
     import traceback
-    global _last_error
     _last_error[market] = None
 
     use_job = bool(job_id and os.getenv("USE_POSTGRES") == "1")

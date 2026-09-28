@@ -1889,6 +1889,7 @@ def test_deadline_versus_successful_completion_race_exactly_one_outcome_no_deadl
     val_runs/val_signals rows and a coherent terminal attempt/slot/lease
     state — and that the connection remains fully usable afterward (no
     DeadlockDetected, no lingering lock)."""
+    import psycopg
     import services.validation_engine as ve
     ve._USE_POSTGRES = True
     _reset_ledger_tables(pg_conn)
