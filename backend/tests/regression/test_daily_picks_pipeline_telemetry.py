@@ -548,6 +548,7 @@ def test_failure_in_inner_never_marks_job_completed():
     with patch("services.daily_picks._generate_picks_inner",
                side_effect=RuntimeError("ranking exploded")), \
          patch("os.getenv", return_value="1"), \
+         patch("services.daily_picks._subprocess_isolation_enabled", return_value=False), \
          patch("services.postgres_store.mark_daily_picks_job_running"), \
          patch("services.postgres_store.mark_daily_picks_job_completed",
                side_effect=lambda *a, **kw: mark_completed_calls.append(a)), \
@@ -556,6 +557,14 @@ def test_failure_in_inner_never_marks_job_completed():
          patch("services.daily_picks._heartbeat_loop"), \
          patch("builtins.open", MagicMock()), \
          patch("json.dump"):
+        # The blanket os.getenv patch above returns "1" for EVERY key,
+        # which also turned on DAILY_PICKS_SUBPROCESS_ISOLATION_ENABLED_US
+        # once that path shipped: generate_picks then spawned a real child
+        # (patches don't cross a spawn boundary) and blocked on the 3600s
+        # isolation timeout - ~3610s, ~93% of the whole backend suite's
+        # wall time (issue #114 profiling). This test targets the in-process
+        # failure->mark_failed path; isolation has its own coverage in
+        # test_daily_picks_subprocess_isolation.py.
         dp.generate_picks("US", job_id="job-fail-1")
 
     assert len(mark_completed_calls) == 0, "completed must not be called on failure"

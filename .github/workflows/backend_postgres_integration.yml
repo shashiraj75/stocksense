@@ -30,6 +30,14 @@ on:
 permissions:
   contents: read
 
+# Cancel a superseded PR run when a newer commit lands on the same PR. Push
+# runs (main) get a per-SHA group, so they are never cancelled or replaced by
+# a newer pending run - every main execution stays auditable and its check
+# suite stays intact for Railway's wait-for-CI deploy gate.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   postgres-integration:
     runs-on: ubuntu-latest
@@ -131,4 +139,4 @@ jobs:
           path: |
             backend/postgres_integration_report.xml
             backend/postgres_integration_output.log
-          retention-days: 14
+          retention-days: 5
