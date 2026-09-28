@@ -179,8 +179,6 @@ def get_ic_weights(horizon: str, market: str = "IN",
 
     weight_k = max(0, IC_k × regime_mult_k) / Σ(...)
     """
-    global _cache, _cache_expiry
-
     cache_key = f"{market}:{horizon}:{','.join(f'{k}:{v}' for k,v in sorted((regime_multipliers or {}).items()))}"
     now = time.time()
 
