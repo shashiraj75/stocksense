@@ -2895,7 +2895,7 @@ def attempt_governed_recovery(market: str, reason: str) -> dict:
         log.warning(f"[picks] [{market}] [watchdog] recovery reservation failed: {e}")
         return {"triggered": False, "reason": "reservation_failed"}
 
-    if outcome != "reserved":
+    if outcome != "started":
         return {"triggered": False, "reason": outcome}
 
     log.error(  # error level — this IS the "missed scheduled trigger" alert Phase 7 asks for
