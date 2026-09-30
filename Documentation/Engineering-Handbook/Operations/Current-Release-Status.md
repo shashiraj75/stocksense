@@ -1,5 +1,13 @@
 # StockSense360 — Current Release Status
 
+## Daily Picks incident — 2026-09-30
+
+IN and US dedicated workers are failing before generation because their
+reservation success contract was misread. PR #119 recovery and release
+evidence: [Daily Picks reservation recovery](../Releases/Daily-Picks-Reservation-Recovery-2026-09-30.md).
+Historical operational claims below do not establish current Daily Picks
+health. Deployment and completed-run verification are pending in that report.
+
 **Purpose:** This document is the authoritative operational-status register for live and pending releases. It records what is deployed, what remains disabled, what is pending validation, and which future actions require explicit approval.
 
 **Use this document for current state.** Historical sprint reports, Epic closures, SSDS documents, and audit reports remain authoritative evidence for their own completed scope, but they do not automatically describe the current production operating state.

@@ -101,7 +101,7 @@ def test_recovery_triggers_exactly_one_bounded_job_when_genuinely_missing():
          patch("services.postgres_store.get_active_daily_picks_job", return_value=None), \
          patch("services.postgres_store.count_daily_picks_job_attempts_since", return_value=1), \
          patch("services.postgres_store.try_reserve_daily_picks_job_with_lease",
-               return_value="reserved") as mock_reserve, \
+               return_value="started") as mock_reserve, \
          patch("threading.Thread") as mock_thread:
         result = dp.attempt_governed_recovery("US", reason="skipped_stale_base")
 

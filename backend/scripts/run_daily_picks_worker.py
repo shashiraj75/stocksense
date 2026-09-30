@@ -106,7 +106,7 @@ def run(market: str) -> int:
         )
         return 4
 
-    if outcome != "reserved":
+    if outcome != "started":
         log.error("[daily_picks_worker] [%s] unexpected reservation outcome=%s", market, outcome)
         return 5
 
