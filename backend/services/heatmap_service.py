@@ -96,7 +96,10 @@ def _bulk_changes(symbols: list[str], suffix: str) -> dict[str, dict[str, float]
         # period="5d" ensures we always have ≥2 rows of settled trading data.
         # period="2d" breaks when today's row is all-NaN (market just closed,
         # data not yet published) — dropna leaves only 1 row → len < 2 → all None.
-        df = yf.download(tickers, period="5d", interval="1d", progress=False)
+        # Avoid yfinance/multitasking retaining a Thread per ticker on every
+        # refresh, plus native allocator arenas, in the persistent web process.
+        df = yf.download(tickers, period="5d", interval="1d", progress=False,
+                         threads=False)
         if df.empty:
             return changes
         if isinstance(df.columns, pd.MultiIndex):
