@@ -887,7 +887,10 @@ async def lifespan(app: FastAPI):
         except Exception:
             log.warning("[startup] postmortem outbox worker failed to start — continuing without it")
 
+    from services.web_memory import web_memory_maintenance
+    memory_task = asyncio.create_task(web_memory_maintenance())
     yield
+    memory_task.cancel()
     task.cancel()
     keepalive.cancel()
     outcome_task.cancel()
@@ -904,7 +907,7 @@ async def lifespan(app: FastAPI):
     daily_picks_orphan_sweep_task.cancel()
     for t in (task, keepalive, outcome_task, warmup_task, crumb_task, validation_task, missed_slot_check_task,
               picks_catchup_task, picks_catchup_task_us, trade_notify_task, trade_exit_monitor_task,
-              us_movers_task, price_alerts_task, daily_picks_orphan_sweep_task):
+              us_movers_task, price_alerts_task, daily_picks_orphan_sweep_task, memory_task):
         try:
             await t
         except asyncio.CancelledError:
