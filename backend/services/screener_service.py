@@ -60,7 +60,12 @@ def _bulk_quotes(tickers: list[str]) -> dict[str, dict]:
     """Bulk download last 5 days — ensures ≥2 settled trading rows even when today is all-NaN."""
     results = {}
     try:
-        df = yf.download(tickers, period="5d", interval="1d", progress=False, auto_adjust=True)
+        # yfinance's threaded downloader retains completed Thread objects in
+        # multitasking and leaves large native allocator arenas resident. This
+        # scan runs every three minutes in the long-lived web process. Keep it
+        # serial inside the existing background executor (not the event loop).
+        df = yf.download(tickers, period="5d", interval="1d", progress=False,
+                         auto_adjust=True, threads=False)
         if df.empty:
             return results
         # Handle both multi-ticker (MultiIndex) and single-ticker DataFrames
