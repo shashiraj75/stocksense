@@ -55,8 +55,8 @@ const HORIZONS: { key: Horizon; label: string; desc: string }[] = [
 ];
 
 const TRADE_MANAGEMENT_OPTIONS: { key: TradeManagementMode; label: string; desc: string; disabled?: boolean }[] = [
-  { key: "manual", label: "Manual", desc: "Alerts only" },
   { key: "auto",   label: "Auto",   desc: "Automatically closes trade" },
+  { key: "manual", label: "Manual", desc: "Alerts only" },
   { key: "ai_assisted", label: "AI", desc: "Coming Soon", disabled: true },
 ];
 
@@ -71,7 +71,7 @@ export function PaperTradeModal({
   const isSell = existingTradeId != null;
 
   const [selectedHorizon, setSelectedHorizon] = useState<Horizon>(initialHorizon as Horizon);
-  const [tradeManagementMode, setTradeManagementMode] = useState<TradeManagementMode>("manual");
+  const [tradeManagementMode, setTradeManagementMode] = useState<TradeManagementMode>("auto");
   const [quantity, setQuantity] = useState(existingQuantity ?? 1);
   // Always pre-fill with AI suggestions — visible and editable regardless of signal
   const [stopLoss, setStopLoss] = useState<string>(
