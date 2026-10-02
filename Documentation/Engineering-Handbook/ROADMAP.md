@@ -66,6 +66,7 @@ Ten execution sprints (Sprint 002–011) are proposed to take the Selection Engi
 | 3.3 | Correlation: extend the optimizer's covariance matrix to include existing holdings, not just candidate-vs-candidate | High | High | M | Medium — changes optimizer output, needs careful validation against 1.1's harness | 3.1, 3.2 | `services/alpha_engine/optimizer.py` | 2 weeks | 006 |
 | 3.4 | Position sizing: scale suggested Paper Trade quantities to account size and existing exposure | Medium | Medium | S–M | Low | 3.1 | `paper_trading.py` router, frontend `PaperTradeModal` | 1 week | 006 |
 | 3.5 | Cross-reference Daily Picks / Multibagger against a user's Watchlist for personalized ranking | Medium | Medium — a smaller, more contained version of full portfolio-awareness | M | Medium | 3.1 | `daily_picks.py`, `multibagger_scorecard.py` | 1–2 weeks | 006 |
+| 3.6 | **Transaction-Cost and Estimated-Tax P&L**: implement [SSDS-010](SSDS/SSDS-010-Transaction-Cost-and-Estimated-Tax-PnL.md) incrementally (TC-0–TC-6), keeping Gross, After-Cost, and Estimated After-Tax layers separate for India and the U.S. | High | High — realistic, auditable investor P&L and after-cost model outcomes | L (multi-sprint) | High for tax/privacy; Medium for cost calculation | Current Daily Picks evidence/outcome work closed; clean fills; immutable lots; broker scope; tax/legal review | Future Paper Trading/Portfolio services, private migrations, dashboard components, tests; exact paths decided in TC-0 | Multi-sprint; TC-0 1–2 weeks | Unscheduled |
 
 ---
 
