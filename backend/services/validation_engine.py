@@ -1238,9 +1238,19 @@ def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_
     row = df.iloc[i]
 
     # ── Technical score (mirrors get_signal_summary logic) ────────────────────
+    # 2026-08-24 methodology remediation (isolated PR B): mean-reversion
+    # oscillators (RSI/BB/StochRSI/Williams-%R/CCI) are trend-gated
+    # identically to services/technical_indicators.py::get_signal_summary
+    # — see that function's docstring for the full evidence (2.9M+ signal
+    # backtest). This PR intentionally does NOT change SELL classification
+    # — `predicted` below is unchanged; see fix/equity-sell-containment
+    # for that separate, independently reviewable change.
+    adx_regime = row.get("adx", np.nan)
+    trending = bool(pd.notna(adx_regime) and adx_regime > 25)
+
     tech = 50.0
     rsi = row.get("rsi_14", np.nan)
-    if pd.notna(rsi):
+    if pd.notna(rsi) and not trending:
         if rsi < 30:    tech += 15
         elif rsi < 45:  tech += 7
         elif rsi > 70:  tech -= 15
@@ -1266,22 +1276,22 @@ def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_
         tech += 10 if adx_pos > adx_neg else -10
 
     bb_pct = row.get("bb_pct", np.nan)
-    if pd.notna(bb_pct):
+    if pd.notna(bb_pct) and not trending:
         if bb_pct < 0.1:  tech += 8
         elif bb_pct > 0.9: tech -= 8
 
     stoch_rsi = row.get("stoch_rsi", np.nan)
-    if pd.notna(stoch_rsi):
+    if pd.notna(stoch_rsi) and not trending:
         if stoch_rsi < 0.2:  tech += 7
         elif stoch_rsi > 0.8: tech -= 7
 
     wr = row.get("williams_r", np.nan)
-    if pd.notna(wr):
+    if pd.notna(wr) and not trending:
         if wr < -80:  tech += 6
         elif wr > -20: tech -= 6
 
     cci = row.get("cci", np.nan)
-    if pd.notna(cci):
+    if pd.notna(cci) and not trending:
         if cci < -100: tech += 6
         elif cci > 100: tech -= 6
 
