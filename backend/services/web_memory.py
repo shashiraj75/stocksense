@@ -7,11 +7,28 @@ This maintenance never clears application caches or touches reachable objects.
 import asyncio
 import gc
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from services.memory_guard import malloc_trim
 
 log = logging.getLogger(__name__)
+
+
+def configure_web_executor(loop):
+    """Bound persistent quote/IO threads independently of host CPU count.
+
+    The event loop owns and shuts down its default executor. Cron processes
+    do not call this web-lifespan hook.
+    """
+    workers = int(os.getenv("WEB_IO_WORKERS", "8"))
+    if not 1 <= workers <= 32:
+        raise ValueError("WEB_IO_WORKERS must be between 1 and 32")
+    loop.set_default_executor(ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="web-io"))
+    log.info("[web_memory] io_workers=%s malloc_arena_max=%s",
+             workers, os.getenv("MALLOC_ARENA_MAX", "default"))
 
 
 def _rss_kib():

@@ -588,6 +588,8 @@ def startup_catchup_enabled() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from services.web_memory import configure_web_executor
+    configure_web_executor(asyncio.get_running_loop())
     if os.getenv("USE_POSTGRES") == "1":
         try:
             from services.postgres_store import init_db
