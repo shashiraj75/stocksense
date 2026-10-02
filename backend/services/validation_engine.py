@@ -1230,10 +1230,18 @@ def init_db():
 
 # ── Scoring (uses ONLY data at index i — no look-ahead) ──────────────────────
 
-def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_score: float, regime_adj: float) -> dict:
+def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_score: float, regime_adj: float,
+              horizon: str | None = None) -> dict:
     """
     Compute composite score at row i using only df[:i+1].
     Returns dict with composite_score and sub-scores.
+
+    `horizon`, if given, gates the 12-1 momentum term (see
+    services.momentum_factor's docstring) to MEDIUM horizon only, and
+    only when MOMENTUM_FACTOR_ENABLED=1. Optional (default None = no
+    momentum contribution) so this function's pre-existing direct/
+    unit-test callers that never passed a horizon keep their exact prior
+    behavior.
     """
     row = df.iloc[i]
 
@@ -1362,10 +1370,41 @@ def _score_at(df: pd.DataFrame, i: int, benchmark_close: pd.Series | None, fund_
     # Blend with fundamentals (fixed for the whole stock period)
     composite = composite * 0.55 + fund_score * 0.45
     composite += regime_adj
+
+    # `base_composite` — 2026-09-06 (research-corrected PR C): the
+    # PRE-MOMENTUM, PRE-CLAMP composite, returned explicitly so research
+    # code can compute a genuine zero-momentum baseline directly from
+    # this dict rather than reconstructing it by subtracting a weight
+    # constant from the FINAL, already-clamped `composite` — the
+    # corrective-review-confirmed defect in the prior research script
+    # (invalid whenever the pre-clamp sum saturates; clamping is lossy
+    # and subtraction cannot invert it). Rounded identically to
+    # `composite` below for direct comparability.
+    base_composite = max(0.0, min(100.0, composite))
+
+    # 12-1 month momentum, additive on top — 2026-09-06, MEDIUM HORIZON
+    # ONLY, DEFAULT-OFF (mirrors prediction_engine.py::_composite_signal's
+    # identical gate/weight/env-var; see that call site's comment for the
+    # full rationale). Uses services.momentum_factor's shared, tested
+    # indexing — the single source of truth also used by the live path
+    # and every research script. Computed from the same look-ahead-free
+    # `df[:i+1]` window every other sub-score here already uses.
+    momentum_pct_value = None
+    momentum_score = None
+    if horizon == "medium" and os.getenv("MOMENTUM_FACTOR_ENABLED") == "1":
+        from services.momentum_factor import compute_momentum_score, momentum_pct
+        window_close = df["Close"].iloc[:i + 1]
+        momentum_pct_value = momentum_pct(window_close)
+        momentum_score = compute_momentum_score(window_close)
+        composite += (momentum_score - 50) * 2.0
+
     composite = max(0.0, min(100.0, composite))
 
     return {
         "composite": round(composite, 1),
+        "base_composite": round(base_composite, 1),
+        "momentum_pct": round(momentum_pct_value, 3) if momentum_pct_value is not None else None,
+        "momentum_score": momentum_score,
         "tech":      round(tech, 1),
         "rs":        round(rs_score, 1),
         "obv":       round(obv_score, 1),
@@ -1825,7 +1864,7 @@ def _backtest_stock(
                     fund_pit_reason_i = "point-in-time fundamentals not available for market=IN (DP-026)"
 
                 # Score uses the last row of the window (= day i)
-                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score_i, regime_adjs[i])
+                sc = _score_at(window, len(window) - 1, benchmark_close, fund_score_i, regime_adjs[i], horizon=horizon)
                 composite = sc["composite"]
 
                 buy_thr  = BUY_THRESHOLD[horizon]
