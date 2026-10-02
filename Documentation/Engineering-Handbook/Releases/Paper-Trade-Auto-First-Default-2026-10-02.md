@@ -3,10 +3,10 @@
 **State:** Draft PR; NOT merged or deployed. Owner acceptance and green CI required before release.
 
 ## Purpose and user-facing behavior
-The new Buy modal shows Trade Management in the order **Auto · Manual · AI**, with **Auto** selected on each fresh modal mount. Choosing Manual still works and is persisted as \`trade_management_mode: "manual"\` for that purchase. AI stays disabled ("Coming Soon"). The explicitly selected mode, including the new Auto default, is sent in the existing Buy payload.
+The new Buy modal shows Trade Management in the order **Auto · Manual · AI**, with **Auto** selected on each fresh modal mount. Choosing Manual still works and is persisted as `trade_management_mode: "manual"` for that purchase. AI stays disabled ("Coming Soon"). The explicitly selected mode, including the new Auto default, is sent in the existing Buy payload.
 
 ## Scope and compatibility
-- Affected: \`frontend/src/components/PaperTradeModal.tsx\` and its focused regression tests.
+- Affected: `frontend/src/components/PaperTradeModal.tsx` and its focused regression tests.
 - Unchanged: existing paper positions and their stored modes; portfolio mode-edit controls; backend API/schema and legacy default; server-side exit monitor; recommendation scoring, prediction evidence, horizons, and risk-based sizing; India/US separation; real-money trading (not part of this feature).
 - No data migration, scheduler change, provider call, or extra Railway worker.
 - This is an intentional default change for **new modal-based paper purchases only**, not a retroactive conversion of existing positions or a change to API clients that omit the mode.
