@@ -1,6 +1,6 @@
 # Paper Trade — Auto-first, Auto-default (2026-10-02)
 
-**State:** Draft PR; NOT merged or deployed. Owner acceptance and green CI required before release.
+**Acceptance:** Owner confirmed all four Preview acceptance checks on 2026-10-02. CI, merge and deployment state must be verified against the corresponding GitHub/Vercel SHAs, not inferred from this static release note.
 
 ## Purpose and user-facing behavior
 The new Buy modal shows Trade Management in the order **Auto · Manual · AI**, with **Auto** selected on each fresh modal mount. Choosing Manual still works and is persisted as `trade_management_mode: "manual"` for that purchase. AI stays disabled ("Coming Soon"). The explicitly selected mode, including the new Auto default, is sent in the existing Buy payload.
@@ -25,4 +25,4 @@ Focused React/Vitest regression covers option order, default selection, submitte
 Revert this PR to restore Manual-first/Manual-default. No migration or position rewrite is required. Existing trades retain their selected mode.
 
 ## Production verification boundary
-No production push or deployment is authorized by creation of this draft PR. After owner approval and green CI, review any active Daily Picks validation/deployment blockers separately before merging; verify exact deployed SHA and visually check the modal afterward.
+Preview acceptance alone does not authorize bypassing any production safety or CI gate. Before merging, verify no active Daily Picks or validation process would be interrupted and that required checks remain green. Use the repository's normal Git-triggered deployment and verify its exact SHA afterward; do not manually restart services. Production verification must be documented from actual runtime evidence.
