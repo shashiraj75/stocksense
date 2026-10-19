@@ -14,6 +14,10 @@ health. Deployment and completed-run verification are pending in that report.
 
 **As of:** 2026-08-07 — maintained as a live operational register
 
+## API memory hardening — 2026-10-19 (local branch, not deployed)
+
+Startup catch-up is forced off in external-worker-only mode, and API web-memory reclaim is now demand-driven (growth/interval) instead of every minute. See [API Memory Hardening](../Releases/API-Memory-Hardening-2026-10-19.md). Awaiting natural-run verification; no production effect until deployed.
+
 ## Major Feature Lifecycle Summary (2026-08-07 reconciliation)
 
 Code-grounded snapshot from the post-Jul-11 documentation reconciliation
