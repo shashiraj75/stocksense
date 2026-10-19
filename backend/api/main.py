@@ -580,8 +580,17 @@ async def _warmup_loop():
 
 
 def startup_catchup_enabled() -> bool:
-    """Return True only when DAILY_PICKS_STARTUP_CATCHUP_ENABLED is 1/true/yes.
+    """Return True only when DAILY_PICKS_STARTUP_CATCHUP_ENABLED is 1/true/yes
+    AND DAILY_PICKS_EXTERNAL_WORKER_ONLY is not set (worker-only mode wins).
     Reads env at call time so tests can patch os.environ deterministically."""
+    # Dedicated-worker architecture: heavy Daily Picks generation belongs to the
+    # short-lived Railway cron workers.  In external-worker-only mode the API
+    # must never start generation itself (this catch-up path reserves via the
+    # lease-less try_reserve_daily_picks_job), so catch-up is forced off.
+    if os.getenv("DAILY_PICKS_EXTERNAL_WORKER_ONLY", "0").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        return False
     value = os.getenv("DAILY_PICKS_STARTUP_CATCHUP_ENABLED", "0")
     return value.strip().lower() in {"1", "true", "yes"}
 

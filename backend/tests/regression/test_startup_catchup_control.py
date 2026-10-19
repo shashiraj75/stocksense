@@ -334,3 +334,26 @@ def test_us_catchup_itself_never_triggers_the_finalizer():
     catchup_body = src[catchup_start:catchup_end]
     assert "finalize_premarket" not in catchup_body
     assert "premarket_finalize" not in catchup_body
+
+
+# ---------------------------------------------------------------------------
+# Dedicated-worker mode forces catch-up off (it reserves without a heavy lease
+# and would run generation inside the long-lived API container).
+# ---------------------------------------------------------------------------
+
+def test_startup_catchup_forced_off_in_external_worker_only_mode():
+    import api.main as main_mod
+    for worker_value in ("1", "true", "YES", "on"):
+        env = {"DAILY_PICKS_EXTERNAL_WORKER_ONLY": worker_value,
+               "DAILY_PICKS_STARTUP_CATCHUP_ENABLED": "1"}
+        with patch.dict("os.environ", env, clear=False):
+            assert main_mod.startup_catchup_enabled() is False
+
+
+def test_startup_catchup_unchanged_when_worker_only_off():
+    import api.main as main_mod
+    for worker_value in ("0", "", "false", "no"):
+        env = {"DAILY_PICKS_EXTERNAL_WORKER_ONLY": worker_value,
+               "DAILY_PICKS_STARTUP_CATCHUP_ENABLED": "1"}
+        with patch.dict("os.environ", env, clear=False):
+            assert main_mod.startup_catchup_enabled() is True

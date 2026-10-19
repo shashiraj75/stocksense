@@ -48,7 +48,48 @@ async def test_failed_pass_waits_before_retry_and_cancellation_stops_loop(monkey
 
     monkeypatch.setattr(web_memory.asyncio, "sleep", sleep)
     monkeypatch.setattr(web_memory, "reclaim_web_memory", reclaim)
+    monkeypatch.setattr(web_memory, "reclaim_due", lambda *a, **k: True)
     with pytest.raises(asyncio.CancelledError):
         await web_memory.web_memory_maintenance()
     assert len(passes) == 2
     assert waits == [60, 60, 60]
+
+
+def test_reclaim_due_on_interval_or_growth_only():
+    due = web_memory.reclaim_due
+    # neither elapsed nor grown -> not due
+    assert due(1000, 900, 10, 900, 256 * 1024) is False
+    # interval elapsed -> due regardless of RSS
+    assert due(1000, 1000, 900, 900, 256 * 1024) is True
+    # RSS grew past the threshold -> due before the interval
+    assert due(900 + 256 * 1024, 900, 10, 900, 256 * 1024) is True
+    # RSS unreadable and interval not elapsed -> never due (fail quiet, not fail loud)
+    assert due(None, None, 10, 900, 256 * 1024) is False
+
+
+@pytest.mark.asyncio
+async def test_loop_skips_reclaim_until_due_and_interval_env_restores_old_cadence(monkeypatch):
+    async def run(interval_env):
+        monkeypatch.setenv("WEB_MEMORY_RECLAIM_INTERVAL_S", interval_env)
+        monkeypatch.setenv("WEB_MEMORY_RECLAIM_GROWTH_MIB", "100000")
+        ticks = []
+        passes = []
+        clock = {"t": 0.0}
+
+        async def sleep(seconds):
+            ticks.append(seconds)
+            clock["t"] += seconds
+            if len(ticks) == 5:
+                raise asyncio.CancelledError
+
+        monkeypatch.setattr(web_memory.asyncio, "sleep", sleep)
+        monkeypatch.setattr(web_memory.time, "monotonic", lambda: clock["t"])
+        monkeypatch.setattr(web_memory, "_rss_kib", lambda: 1000)
+        monkeypatch.setattr(web_memory, "reclaim_web_memory",
+                            lambda: (passes.append(True) or 1000))
+        with pytest.raises(asyncio.CancelledError):
+            await web_memory.web_memory_maintenance()
+        return len(passes)
+
+    assert await run("900") == 0   # 5 minutes elapsed < 15 min interval
+    assert await run("60") == 4    # interval=60 restores one pass per tick
